@@ -4,6 +4,7 @@ from .database import init_db, connection
 from .schemas import ProductLookup, PriceLookup, RequestCreate
 from .workflows import lookup_product, lookup_price, create_request
 from .sarvam_client import generate_smoke_test_reply, SarvamNotConfigured
+from .voice_tool import router as voice_tool_router
 
 app = FastAPI(title="MR CARE AI Receptionist Demo API", version="0.2.0", description="Private local demo backend. Not connected to production CRM or telephony.")
 
@@ -45,3 +46,5 @@ def list_demo_requests(limit: int = 50):
     with connection() as conn:
         rows=conn.execute("SELECT id,request_type,customer_name,phone,product_name,issue_description,status,created_at FROM service_requests ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
     return {"items":[dict(r) for r in rows]}
+
+app.include_router(voice_tool_router)

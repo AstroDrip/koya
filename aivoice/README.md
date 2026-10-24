@@ -1,0 +1,222 @@
+# MR CARE AI Receptionist — Demo Handoff and Build Plan
+
+**Specification baseline:** MR CARE AI Call Centre demo, v1.2 (19 October 2026), incorporating decisions discussed through 24 October 2026.
+**Project status:** API key exists; the uploaded folder currently contains a one-shot Sarvam chat smoke test and a wheel-download helper. It is **not yet** a live phone receptionist, database, dashboard, or Sarvam Voice Agent.
+
+## 1. Purpose and target experience
+
+Build a safe, low-cost, Malayalam-first AI receptionist demo for MR CARE in Kerala. A customer calls about a service issue; the agent greets them, understands the problem, collects the required information, checks the private demo database, explains only what the data supports, and records a complaint or a request for technician callback/appointment. The client should be able to see the same records in a demo dashboard later.
+
+Exact opening greeting:
+
+> നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?
+
+The current prototype is Malayalam-only. Keep all conversation instructions clear that the assistant must not fabricate product records, warranty coverage, prices, appointments, or service commitments. When it cannot confirm something, it must say so and offer a technician callback/request rather than guessing.
+
+## 2. Current folder and what is actually working
+
+The original uploaded folder contains:
+
+- `chat.py` — loads `SARVAM_API_KEY` from `.env`, creates a Sarvam Python SDK client, sends one short test prompt, and prints one response. This verifies basic text API access if dependencies, network access, and key are valid. It is **not** a persistent conversation, voice pipeline, API server, CRM integration, or voice agent.
+- `_dl_httpx2.py` — downloads latest Python wheels for `httpx2`, `sarvam-mcp`, `fastmcp`, and `fastmcp-slim` into a Windows temp folder. It is not required for the basic chat API or this demo backend; do not run it as part of normal startup. The script chooses the first wheel/file returned by PyPI and is not a locked/reproducible dependency installer.
+- `.env` — contains the user's Sarvam key. Never paste it into chat, source control, browser code, screenshots, README, or a public deployment. If it was ever committed or shared publicly, rotate/revoke it in Sarvam and create a new one.
+- `.gitignore` — currently excludes `.env` only.
+
+This patch series deliberately keeps the existing Python direction instead of introducing an unrelated Node.js stack. It adds a small FastAPI backend, private SQLite demo data, and a protected webhook for Sarvam Voice Agents API tools. Apply the patches in numerical order.
+
+## 3. Architecture: who does what
+
+Recommended first demo: **Sarvam managed Voice Agents (Samvaad) + this project's own backend + private demo database**.
+
+1. **Phone/voice channel:** Sarvam Voice Agents handles the live audio loop (speech recognition, model turn-taking, speech generation and telephony deployment options). The exact deployment/phone-number choice is a separate configuration step.
+2. **Conversation brain:** The managed voice agent follows MR CARE's Malayalam prompt, gathers missing fields, confirms important details, and decides when a backend lookup is needed. Do not build a second full conversation loop in `chat.py`; that would duplicate the managed agent's work and cost.
+3. **Business rules and data:** This FastAPI backend validates requests, reads/writes only the local demo database, and returns structured results. Warranty, pricing, complaint and appointment outcomes must come from this layer, not the model's imagination.
+4. **Database:** SQLite is for this local demo only. Production deployment should move to a managed database (e.g. PostgreSQL) with backups, migrations, access controls, retention rules, and monitoring.
+5. **Dashboard:** Planned next; it should show demo customers, products, complaints, and callback/appointment requests. The dashboard must call the backend and must not hold the Sarvam key.
+6. **Optional text companion:** During the call, first ask whether the customer can access WhatsApp and whether they agree to receive/use it. Voice remains primary. If WhatsApp is unavailable or declined, offer a simple website text input as a fallback. The current patches do not send WhatsApp messages; no real messages are sent. Future WhatsApp integration requires explicit opt-in, approved templates/provider, credentials, and testing.
+
+Sarvam docs: [Voice Agents overview](https://docs.sarvam.ai/voice-agents/introduction), [API tool/webhook setup](https://docs.sarvam.ai/voice-agents/build/tools/https-tool), [Chat Completion API](https://docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview), [Python SDKs](https://docs.sarvam.ai/api/getting-started/sdks).
+
+## 4. Customer conversation and data collection
+
+Collect and confirm as relevant:
+
+- Customer name
+- Address/locality
+- Pincode
+- Phone number (use caller ID only when available and exposed by the voice provider; confirm or ask for the preferred contact number)
+- Product name
+- Model number
+- Serial number
+- Invoice number, if available
+- Warranty number, if available (optional, **not required** for warranty check)
+- Description of issue/damage
+
+Ask concise follow-up questions only for missing/ambiguous fields. Do not ask the caller whether a water-damaged phone turns on as a default question; a prior role-play explicitly ruled out that question for that scenario. Ask relevant, non-leading questions and do not make unsafe assumptions.
+
+If the customer cannot use WhatsApp, offer the simple website chat input. The website chat should be a text input/send fallback, not a separate chat persona that repeatedly asks questions while the voice agent is already talking. Keep one conversation owner, session IDs isolated per call, and prevent cross-customer data leakage.
+
+## 5. Demo data model
+
+Customer/dealer fields discussed:
+
+- Name
+- Address
+- Phone
+- Pincode
+
+Product master fields discussed:
+
+- Product name
+- Model number
+- Serial number
+- Purchase date
+- Warranty status
+- Warranty expiry date
+
+Additional operational fields needed to support the workflow include invoice/warranty references when supplied, issue description, consent/contact preference, complaint status, callback/appointment request status, created timestamps, and a call/session correlation ID. Collect only what is needed; don't store full transcripts by default unless a documented purpose, consent/legal basis, access control and retention period are defined.
+
+Warranty logic: use a matching demo product record and the explicit policy/expiry data. If the product is not found, respond with the agreed wording: **“Product master will be added.”** Do not state a product is covered simply because the customer gives a warranty number. If policy/expiry information is missing or ambiguous, say that coverage cannot yet be confirmed and offer a technician callback.
+
+## 6. Complaint, price, callback, and appointment rules
+
+- A complaint may be recorded only after the caller confirms the summary/details.
+- Service-cost estimates may use only an explicitly approved pricing table. If no matching approved price exists, return `price_available: false`; never let the LLM invent a number. The initial demo database intentionally has no approved prices by default.
+- A callback request can be recorded as pending. Do not claim a technician has called or accepted the task.
+- An appointment request can be recorded as pending. Do not promise a date/time until an actual scheduling system or authorized person confirms it. This demo does not connect to a real technician calendar.
+- If the product is unknown, do not create a fake product; mark the master as needing addition / report “Product master will be added.”
+- Ligs is the existing CRM name, but its API/webhook/database integration status is **unknown**. Do not assume it has an API, inspect it separately, and do not modify Ligs or any production system. The demo database remains separate.
+
+## 7. APIs and services required
+
+### Required for the current build
+
+- **Sarvam API key** — for the existing text API smoke test; stored only in local `.env` as `SARVAM_API_KEY`.
+- **Python 3.11+ recommended** and packages in `requirements.txt` (`sarvamai`, `fastapi`, `uvicorn`, `python-dotenv`).
+- **FastAPI backend** — health check, Sarvam text smoke-test endpoint, demo-data endpoints, and protected voice-agent tool endpoint.
+- **SQLite** — local demo DB created by the backend; no external DB service needed locally.
+- **A separate `MRCARE_TOOL_SECRET`** — protects the backend webhook when Sarvam Voice Agents calls it. This is not the Sarvam key. Configure it as a secret in the Sarvam tool UI, not as plain text in the agent prompt.
+
+### Required to make it a real phone receptionist (not yet configured by these files)
+
+- Create/configure a managed voice agent in [Sarvam Samvaad](https://indus.sarvam.ai/samvaad), choose Malayalam voice/language settings, use the exact greeting, add the system prompt from the section below, create an API tool, and test in the agent playground.
+- For the live tool, the backend must have a reachable HTTPS URL. `localhost` is not reachable by Sarvam cloud. Use a temporary secure HTTPS tunnel for controlled tests or deploy to a secure host. Do not expose a dev server publicly without authentication. Keep the webhook timeout tight and return compact JSON.
+- A telephony provider/number or supported Sarvam deployment option is needed for real calls. No real calls or number purchases should happen until explicitly approved.
+- Optional later: WhatsApp Business provider/approved templates, website chat UI, dashboard, PostgreSQL, deployment/monitoring/backups, technician scheduling integration, and a verified Ligs integration if supported.
+
+### Do not add by default
+
+- No real WhatsApp send endpoint, outbound calls, production CRM write, real technician booking, or unapproved price estimates.
+- No API key in frontend JavaScript.
+- No unnecessary second LLM call for every turn. The managed voice agent handles the conversation; backend endpoints handle deterministic business operations.
+
+## 8. Environment variables
+
+Copy `.env.example` to `.env`, then set:
+
+```dotenv
+SARVAM_API_KEY=your_sarvam_key_here
+MRCARE_TOOL_SECRET=replace_with_a_long_random_secret
+MRCARE_DB_PATH=./data/mrcare_demo.sqlite3
+HOST=127.0.0.1
+PORT=8000
+```
+
+The `.env` already present in the original folder may contain the actual key; keep it, do not overwrite it with a placeholder, and do not share it. `.env.example` contains placeholders only. Never commit `.env`.
+
+## 9. Apply patches in order
+
+Extract the patch bundle into the **same parent folder** that contains your existing `aivoice` folder, so `patches\` and `aivoice\` sit beside each other. Open PowerShell in that parent folder (Git must be installed):
+
+```powershell
+git apply --ignore-space-change .\patches\001-foundation-readme.patch
+git apply --ignore-space-change .\patches\002-fastapi-backend.patch
+git apply --ignore-space-change .\patches\003-demo-database-and-workflows.patch
+git apply --ignore-space-change .\patches\004-sarvam-voice-tool-webhook.patch
+```
+
+The patches are designed to be sequential. If this folder is not a Git repository, `git apply` still applies patches to files, but keep a backup copy first. Do not apply them twice. If you only want to inspect a patch before applying it, open the `.patch` file in a text editor.
+
+## 10. Run and verify locally
+
+Open PowerShell in the `aivoice` folder:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Only run the `Copy-Item` command if you do **not** already have `.env`; if you do, preserve the existing key and add `MRCARE_TOOL_SECRET` and the other variables manually. Never paste the real key into a shared document.
+
+Start the server:
+
+```powershell
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Verify `http://127.0.0.1:8000/health` and open `http://127.0.0.1:8000/docs` for local API documentation. The health endpoint must not reveal secrets. Test the Sarvam connection only through the backend test endpoint; it should return a short model response or a sanitized error. Keep the server bound to `127.0.0.1` for local-only testing.
+
+## 11. Sarvam Voice Agent setup (manual workspace step)
+
+1. Open Samvaad and create a new agent for **MR CARE**. Do not deploy it to a live number yet.
+2. Set the language to Malayalam and configure the exact greeting.
+3. Use the instructions below as the initial agent prompt. Keep instructions in Malayalam if that gives the best test quality, but preserve the required behavior exactly.
+4. Add an API tool named `mrcare_business_action` (or the exact matching name used in the prompt). Method `POST`, URL `https://YOUR-HTTPS-HOST/api/voice-tool`, header `X-MRCARE-Tool-Key` set through Sarvam's secure secret field. JSON body fields should map the action and collected variables. The endpoint accepts an action-based JSON payload; see the OpenAPI docs and the patch notes for supported actions.
+5. Set a short timeout; on failure, the agent should apologize, say it cannot verify the record right now, and offer a callback request without inventing an answer.
+6. Test with the built-in playground/mock tool first. Then point the tool at the real backend HTTPS URL. The local URL `http://127.0.0.1:8000` cannot be reached by Sarvam cloud.
+7. Do not connect telephony or make real calls until explicitly approved.
+
+Official tool guide: https://docs.sarvam.ai/voice-agents/build/tools/https-tool. The exact tool payload must be tested in the workspace's Test action; provider-side UI fields may evolve.
+
+## 12. Initial agent instruction prompt
+
+> You are MR CARE's Malayalam-first service receptionist. Begin exactly: “നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?” Speak politely and naturally in Malayalam. Collect and confirm the customer's name, locality/address, pincode, contact number, product name, model number, serial number, invoice number if available, optional warranty number, and a concise issue/damage description. Ask only useful follow-up questions for missing or conflicting information. Do not ask whether a water-damaged phone turns on as a default question. Before recording a complaint, summarize the details and ask the caller to confirm. Use `mrcare_business_action` for product/warranty lookup, approved price lookup, complaint registration after confirmation, or callback/appointment requests. Never invent product records, warranty coverage, prices, technician availability, or appointment confirmation. A warranty number is optional; use the demo product master and its policy/expiry fields. If the product is not found, say exactly “Product master will be added.” If price or warranty cannot be confirmed, say so and offer a callback. Treat callback and appointment as requests pending human/system confirmation. First ask whether WhatsApp is accessible and whether the customer agrees to use it; if not, offer the simple website text-input fallback. Do not send messages yourself unless an explicitly approved WhatsApp integration is later configured. Keep customer sessions separate and never expose another customer's information.
+
+## 13. Planned build stages and status
+
+| Stage | Scope | Status after applying this patch series |
+|---|---|---|
+| 0 | API key and basic chat test | Already present in the original folder; retain as smoke-test capability |
+| 1 | Documentation, dependency manifest, environment template, safer ignore rules | Added by patch 001 |
+| 2 | FastAPI health and server-side Sarvam test endpoint | Added by patch 002 |
+| 3 | Private demo SQLite schema, demo seed records, lookup, warranty, approved pricing, complaint and request flows | Added by patch 003 |
+| 4 | Authenticated Sarvam API-tool webhook adapter | Added by patch 004; must be tested with actual tool payload in Samvaad |
+| 5 | Configure managed Voice Agent, prompt, mock tool, playground tests | Manual Sarvam workspace work; not performed by patches |
+| 6 | Secure HTTPS test deployment | Not done; requires explicit host/tunnel choice and security setup |
+| 7 | Website chat fallback + WhatsApp consent workflow (no sending yet) | Specified, UI/provider wiring remains future work |
+| 8 | Dashboard, login/access control, PostgreSQL migration, backups/monitoring | Future work |
+| 9 | Inspect Ligs integration capability safely | Future investigation; no production modifications |
+| 10 | Telephony and live calling | Future, only after explicit approval |
+
+“Added” means source files are present; it does not mean the code has been installed, run, verified against the user's account, or deployed. Run local tests before relying on any stage.
+
+## 14. Cost and capacity planning (estimates, not quotes)
+
+The demo target budget discussed was up to **₹1,000 initially**. Previous planning figures discussed for Sarvam managed voice agents were around ₹3.50/minute pay-as-you-go, plus telephony charges (example discussed: ₹0.20 per 30-second pulse and ₹59/30-day number rental), with plan/usage details subject to change. A previous two-minute illustration was approximately ₹7.80 before tax and allocated number rental. Treat all figures as **historical planning estimates only**; check the current Sarvam dashboard/pricing and telephony terms before spending. A text API smoke test is not billed like a managed phone call; audio, agent, telephony, number rental, hosting, WhatsApp, domain, tax, monitoring and backup costs are separate categories. Do not buy a number or place calls until approved.
+
+Initial expected peak concurrency discussed: **1–5 simultaneous calls**, with a path to scale later. This local SQLite/demo server is not yet a production-concurrency design. Real deployment needs measured load tests, queue/timeout behavior, provider concurrency limits, database pooling, monitoring and clear fallback when the agent is busy.
+
+## 15. Security, privacy, reliability and production boundary
+
+- Never commit `.env` or expose either secret to browser code.
+- Use `MRCARE_TOOL_SECRET` for the webhook separately from `SARVAM_API_KEY`; rotate secrets if exposed.
+- Local demo only; no Ligs/production changes and no real calls or WhatsApp messages by default.
+- Bind the development server to localhost. For a cloud tool, use HTTPS and strong auth; do not expose an unauthenticated dev server.
+- Validate payload lengths and action names; return minimal structured data; don't include secrets or full transcripts in logs.
+- Use request/session correlation IDs and idempotency for actions that create records; do not create duplicate complaints from tool retries.
+- Put timeouts on provider calls; use bounded retries, safe fallback and rate limiting before public deployment.
+- Keep demo/test customer data fictional. Do not upload actual customer records to the prototype without authorization and a privacy/retention plan.
+- Do not treat a model response as authoritative for warranty, pricing, or scheduling; business facts must be returned by backend tools.
+
+## 16. Known limitations / next decisions
+
+- The patches cannot create or configure a Sarvam Voice Agent in the user's account; that is a separate Samvaad workspace step.
+- The webhook payload mapping needs an end-to-end test against the current Sarvam API-tool UI before production use.
+- There is no real phone number, telephony routing, WhatsApp integration, public HTTPS host, dashboard, technician calendar, or Ligs connection in this repository yet.
+- Demo pricing records must be populated only from MR CARE-approved prices. No default service price is seeded.
+- SQLite is intended for local demonstration, not high availability or multiple production instances.
+- Current code is a starting demo implementation, not certified for production or emergency use.
+\n\n## 17. Webhook contract added by patch 004\n\nThe protected `POST /api/voice-tool` endpoint expects the `X-MRCARE-Tool-Key` header and a JSON body. It supports these action names: `lookup_product`, `check_warranty`, `lookup_approved_price`, `register_complaint`, `request_callback`, `request_appointment`. For example, a **local-only test** can send `{"action":"lookup_product","model_number":"DEMO-AF-01"}`. For a complaint, include `customer_confirmed: true`; otherwise it is rejected. Use `interaction_id` and a stable `idempotency_key` to reduce duplicate records when tools retry.\n\nIn Samvaad, map the body fields to the agent's captured variables using its variable picker and configure the header via a secure secret. Test the tool's request/response using the current workspace's Test button; do not assume the provider's UI has exactly the same fields as an older screenshot. Do not send full call transcripts unless there is a documented reason.\n\n**Important:** this endpoint is a starter adapter, not a guarantee that every Sarvam workspace emits the same body shape. First test a mock tool, then test the real endpoint with a minimal lookup, then enable write actions. Keep it private until authentication, HTTPS, validation, idempotency, and timeout behavior have been verified.\n
