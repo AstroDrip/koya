@@ -1,0 +1,79 @@
+diff --git a/aivoice/app/__init__.py b/aivoice/app/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/aivoice/app/config.py b/aivoice/app/config.py
+new file mode 100644
+index 0000000..46a8e3c
+--- /dev/null
++++ b/aivoice/app/config.py
+@@ -0,0 +1,17 @@
++from pathlib import Path
++import os
++from dotenv import load_dotenv
++
++PROJECT_ROOT = Path(__file__).resolve().parents[1]
++load_dotenv(PROJECT_ROOT / ".env")
++
++def get_db_path() -> Path:
++    raw = os.getenv("MRCARE_DB_PATH", "./data/mrcare_demo.sqlite3")
++    path = Path(raw)
++    if not path.is_absolute():
++        path = PROJECT_ROOT / path
++    path.parent.mkdir(parents=True, exist_ok=True)
++    return path
++
++SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
++MRCARE_TOOL_SECRET = os.getenv("MRCARE_TOOL_SECRET", "").strip()
+diff --git a/aivoice/app/main.py b/aivoice/app/main.py
+new file mode 100644
+index 0000000..5d15cf0
+--- /dev/null
++++ b/aivoice/app/main.py
+@@ -0,0 +1,22 @@
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel, Field
++from .sarvam_client import generate_smoke_test_reply, SarvamNotConfigured
++
++app = FastAPI(title="MR CARE AI Receptionist Demo API", version="0.1.0", description="Local demo backend. Not connected to production CRM or telephony.")
++
++class SarvamTestRequest(BaseModel):
++    prompt: str = Field(default="Say hello in Malayalam in one short sentence.", min_length=1, max_length=2000)
++
++@app.get("/health")
++def health():
++    return {"ok": True, "service": "mrcare-demo-api", "mode": "local-demo"}
++
++@app.post("/api/test-sarvam")
++def test_sarvam(body: SarvamTestRequest):
++    try:
++        return {"ok": True, "reply": generate_smoke_test_reply(body.prompt)}
++    except SarvamNotConfigured as exc:
++        raise HTTPException(status_code=503, detail=str(exc)) from exc
++    except Exception as exc:
++        # Avoid returning provider headers, credentials, or raw SDK internals to callers.
++        raise HTTPException(status_code=502, detail="Sarvam request failed. Check server logs and Sarvam account/key status.") from exc
+diff --git a/aivoice/app/sarvam_client.py b/aivoice/app/sarvam_client.py
+new file mode 100644
+index 0000000..6d2215d
+--- /dev/null
++++ b/aivoice/app/sarvam_client.py
+@@ -0,0 +1,19 @@
++from sarvamai import SarvamAI
++from .config import SARVAM_API_KEY
++
++class SarvamNotConfigured(RuntimeError):
++    pass
++
++def generate_smoke_test_reply(prompt: str) -> str:
++    if not SARVAM_API_KEY:
++        raise SarvamNotConfigured("SARVAM_API_KEY is not configured in the server environment.")
++    client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
++    response = client.chat.completions(
++        model="sarvam-105b-conversations",
++        messages=[
++            {"role": "system", "content": "You are a concise Malayalam-capable assistant. This is an API connectivity test, not a real MR CARE customer session."},
++            {"role": "user", "content": prompt[:2000]},
++        ],
++    )
++    content = response.choices[0].message.content
++    return content if isinstance(content, str) else str(content)

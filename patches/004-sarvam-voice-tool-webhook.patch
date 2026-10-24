@@ -1,0 +1,92 @@
+diff --git a/aivoice/README.md b/aivoice/README.md
+index d08f3b0..88347b4 100644
+--- a/aivoice/README.md
++++ b/aivoice/README.md
+@@ -219,3 +219,4 @@ Initial expected peak concurrency discussed: **1–5 simultaneous calls**, with
+ - Demo pricing records must be populated only from MR CARE-approved prices. No default service price is seeded.
+ - SQLite is intended for local demonstration, not high availability or multiple production instances.
+ - Current code is a starting demo implementation, not certified for production or emergency use.
++\n\n## 17. Webhook contract added by patch 004\n\nThe protected `POST /api/voice-tool` endpoint expects the `X-MRCARE-Tool-Key` header and a JSON body. It supports these action names: `lookup_product`, `check_warranty`, `lookup_approved_price`, `register_complaint`, `request_callback`, `request_appointment`. For example, a **local-only test** can send `{"action":"lookup_product","model_number":"DEMO-AF-01"}`. For a complaint, include `customer_confirmed: true`; otherwise it is rejected. Use `interaction_id` and a stable `idempotency_key` to reduce duplicate records when tools retry.\n\nIn Samvaad, map the body fields to the agent's captured variables using its variable picker and configure the header via a secure secret. Test the tool's request/response using the current workspace's Test button; do not assume the provider's UI has exactly the same fields as an older screenshot. Do not send full call transcripts unless there is a documented reason.\n\n**Important:** this endpoint is a starter adapter, not a guarantee that every Sarvam workspace emits the same body shape. First test a mock tool, then test the real endpoint with a minimal lookup, then enable write actions. Keep it private until authentication, HTTPS, validation, idempotency, and timeout behavior have been verified.\n
+\ No newline at end of file
+diff --git a/aivoice/app/main.py b/aivoice/app/main.py
+index 0137844..30c6770 100644
+--- a/aivoice/app/main.py
++++ b/aivoice/app/main.py
+@@ -4,6 +4,7 @@ from .database import init_db, connection
+ from .schemas import ProductLookup, PriceLookup, RequestCreate
+ from .workflows import lookup_product, lookup_price, create_request
+ from .sarvam_client import generate_smoke_test_reply, SarvamNotConfigured
++from .voice_tool import router as voice_tool_router
+ 
+ app = FastAPI(title="MR CARE AI Receptionist Demo API", version="0.2.0", description="Private local demo backend. Not connected to production CRM or telephony.")
+ 
+@@ -45,3 +46,5 @@ def list_demo_requests(limit: int = 50):
+     with connection() as conn:
+         rows=conn.execute("SELECT id,request_type,customer_name,phone,product_name,issue_description,status,created_at FROM service_requests ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
+     return {"items":[dict(r) for r in rows]}
++
++app.include_router(voice_tool_router)
+diff --git a/aivoice/app/voice_tool.py b/aivoice/app/voice_tool.py
+new file mode 100644
+index 0000000..0b48e07
+--- /dev/null
++++ b/aivoice/app/voice_tool.py
+@@ -0,0 +1,58 @@
++import secrets
++from typing import Optional
++from fastapi import APIRouter, Header, HTTPException
++from pydantic import BaseModel, Field
++from .config import MRCARE_TOOL_SECRET
++from .workflows import lookup_product, lookup_price, create_request
++
++router = APIRouter()
++
++class VoiceToolPayload(BaseModel):
++    action: str = Field(min_length=1, max_length=60)
++    product_name: Optional[str] = Field(default=None, max_length=120)
++    model_number: Optional[str] = Field(default=None, max_length=120)
++    serial_number: Optional[str] = Field(default=None, max_length=120)
++    warranty_number: Optional[str] = Field(default=None, max_length=120)
++    issue_code: Optional[str] = Field(default=None, max_length=80)
++    customer_name: Optional[str] = Field(default=None, max_length=120)
++    phone: Optional[str] = Field(default=None, max_length=30)
++    address: Optional[str] = Field(default=None, max_length=300)
++    pincode: Optional[str] = Field(default=None, max_length=12)
++    invoice_number: Optional[str] = Field(default=None, max_length=120)
++    issue_description: Optional[str] = Field(default=None, max_length=2000)
++    request_type: Optional[str] = Field(default=None, max_length=30)
++    requested_date: Optional[str] = Field(default=None, max_length=30)
++    requested_time: Optional[str] = Field(default=None, max_length=30)
++    customer_confirmed: bool = False
++    interaction_id: Optional[str] = Field(default=None, max_length=150)
++    idempotency_key: Optional[str] = Field(default=None, max_length=180)
++
++@router.post("/api/voice-tool")
++def voice_tool(payload: VoiceToolPayload, x_mrcare_tool_key: Optional[str] = Header(default=None, alias="X-MRCARE-Tool-Key")):
++    if not MRCARE_TOOL_SECRET:
++        raise HTTPException(status_code=503, detail="Webhook secret is not configured on the backend.")
++    if not x_mrcare_tool_key or not secrets.compare_digest(x_mrcare_tool_key, MRCARE_TOOL_SECRET):
++        raise HTTPException(status_code=401, detail="Unauthorized")
++    action=payload.action.strip().lower()
++    if action in ("lookup_product", "check_warranty"):
++        result=lookup_product(payload.product_name,payload.model_number,payload.serial_number,payload.warranty_number)
++        # Keep tool response compact and do not expose customer details unrelated to the request.
++        if result.get("found"):
++            p=result["product"]
++            return {"ok":True,"found":True,"product_name":p.get("product_name"),"model_number":p.get("model_number"),"serial_number":p.get("serial_number"),"warranty_status":p.get("warranty_status_calculated","unknown"),"warranty_confirmed":p.get("warranty_confirmed",False),"message":result.get("message")}
++        return {"ok":True,**result}
++    if action == "lookup_approved_price":
++        if not payload.product_name or not payload.issue_code:
++            raise HTTPException(status_code=422, detail="product_name and issue_code are required")
++        return {"ok":True,**lookup_price(payload.product_name,payload.issue_code)}
++    if action in ("register_complaint", "request_callback", "request_appointment"):
++        typ={"register_complaint":"complaint","request_callback":"callback","request_appointment":"appointment"}[action]
++        if not payload.customer_name:
++            raise HTTPException(status_code=422, detail="customer_name is required")
++        data=payload.model_dump()
++        data["request_type"]=typ
++        result=create_request(data)
++        if not result.get("created"):
++            raise HTTPException(status_code=409, detail=result.get("message","Request not created"))
++        return {"ok":True,**result}
++    raise HTTPException(status_code=400, detail="Unsupported action. Allowed: lookup_product, check_warranty, lookup_approved_price, register_complaint, request_callback, request_appointment.")

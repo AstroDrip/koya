@@ -1,0 +1,16 @@
+MR CARE AI receptionist patch series
+
+Contents:
+- patches/001-foundation-readme.patch
+- patches/002-fastapi-backend.patch
+- patches/003-demo-database-and-workflows.patch
+- patches/004-sarvam-voice-tool-webhook.patch
+- README-MR-CARE.md (full handoff, scope, requirements, setup, agent prompt, safety, cost and roadmap)
+
+Extract this bundle beside the existing aivoice folder. Apply from that parent directory, in order:
+  git apply .\patches\001-foundation-readme.patch
+  git apply .\patches\002-fastapi-backend.patch
+  git apply .\patches\003-demo-database-and-workflows.patch
+  git apply .\patches\004-sarvam-voice-tool-webhook.patch
+
+Backup your folder first. Do not apply twice. Keep the original .env and API key private.

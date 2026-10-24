@@ -1,0 +1,219 @@
+diff --git a/aivoice/app/database.py b/aivoice/app/database.py
+new file mode 100644
+index 0000000..01ec145
+--- /dev/null
++++ b/aivoice/app/database.py
+@@ -0,0 +1,47 @@
++import sqlite3
++from contextlib import contextmanager
++from datetime import date, datetime, timezone
++from .config import get_db_path
++
++SCHEMA = """
++PRAGMA foreign_keys = ON;
++CREATE TABLE IF NOT EXISTS customers (
++ id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT, phone TEXT, pincode TEXT, created_at TEXT NOT NULL
++);
++CREATE TABLE IF NOT EXISTS products (
++ id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER REFERENCES customers(id), product_name TEXT NOT NULL, model_number TEXT, serial_number TEXT UNIQUE, invoice_number TEXT, warranty_number TEXT, purchase_date TEXT, warranty_status TEXT NOT NULL DEFAULT 'unknown', warranty_expiry_date TEXT, warranty_policy TEXT, master_status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
++);
++CREATE TABLE IF NOT EXISTS approved_prices (
++ id INTEGER PRIMARY KEY AUTOINCREMENT, product_name TEXT NOT NULL, issue_code TEXT NOT NULL, issue_label TEXT NOT NULL, min_price REAL, max_price REAL, currency TEXT NOT NULL DEFAULT 'INR', approved_by TEXT NOT NULL, approved_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, UNIQUE(product_name, issue_code)
++);
++CREATE TABLE IF NOT EXISTS service_requests (
++ id INTEGER PRIMARY KEY AUTOINCREMENT, request_type TEXT NOT NULL CHECK(request_type IN ('complaint','callback','appointment')), customer_id INTEGER REFERENCES customers(id), product_id INTEGER REFERENCES products(id), customer_name TEXT, phone TEXT, address TEXT, pincode TEXT, product_name TEXT, model_number TEXT, serial_number TEXT, invoice_number TEXT, warranty_number TEXT, issue_description TEXT, requested_date TEXT, requested_time TEXT, status TEXT NOT NULL DEFAULT 'pending', confirmation_text TEXT, interaction_id TEXT, idempotency_key TEXT UNIQUE, created_at TEXT NOT NULL
++);
++CREATE INDEX IF NOT EXISTS idx_products_model ON products(model_number);
++CREATE INDEX IF NOT EXISTS idx_products_serial ON products(serial_number);
++CREATE INDEX IF NOT EXISTS idx_requests_status ON service_requests(status);
++"""
++
++def now_iso():
++    return datetime.now(timezone.utc).isoformat()
++
++@contextmanager
++def connection():
++    conn = sqlite3.connect(get_db_path(), timeout=10)
++    conn.row_factory = sqlite3.Row
++    conn.execute("PRAGMA foreign_keys = ON")
++    try:
++        yield conn
++        conn.commit()
++    except Exception:
++        conn.rollback()
++        raise
++    finally:
++        conn.close()
++
++def init_db():
++    with connection() as conn:
++        conn.executescript(SCHEMA)
++        # Fictional demonstration data only; never real MR CARE customer records.
++        conn.execute("INSERT OR IGNORE INTO customers(id,name,address,phone,pincode,created_at) VALUES(1,?,?,?,?,?)", ("Demo Customer", "Demo locality, Kerala", "9000000001", "673001", now_iso()))
++        conn.execute("INSERT OR IGNORE INTO products(id,customer_id,product_name,model_number,serial_number,invoice_number,purchase_date,warranty_status,warranty_expiry_date,warranty_policy,created_at) VALUES(1,1,?,?,?,?,?,?,?,?,?)", ("Demo Air Fryer", "DEMO-AF-01", "DEMO-SERIAL-0001", "DEMO-INVOICE-0001", "2026-01-15", "unknown", None, "Demo record: verify policy before any warranty statement.", now_iso()))
+diff --git a/aivoice/app/main.py b/aivoice/app/main.py
+index 5d15cf0..0137844 100644
+--- a/aivoice/app/main.py
++++ b/aivoice/app/main.py
+@@ -1,8 +1,15 @@
+ from fastapi import FastAPI, HTTPException
+ from pydantic import BaseModel, Field
++from .database import init_db, connection
++from .schemas import ProductLookup, PriceLookup, RequestCreate
++from .workflows import lookup_product, lookup_price, create_request
+ from .sarvam_client import generate_smoke_test_reply, SarvamNotConfigured
+ 
+-app = FastAPI(title="MR CARE AI Receptionist Demo API", version="0.1.0", description="Local demo backend. Not connected to production CRM or telephony.")
++app = FastAPI(title="MR CARE AI Receptionist Demo API", version="0.2.0", description="Private local demo backend. Not connected to production CRM or telephony.")
++
++@app.on_event("startup")
++def startup():
++    init_db()
+ 
+ class SarvamTestRequest(BaseModel):
+     prompt: str = Field(default="Say hello in Malayalam in one short sentence.", min_length=1, max_length=2000)
+@@ -13,10 +20,28 @@ def health():
+ 
+ @app.post("/api/test-sarvam")
+ def test_sarvam(body: SarvamTestRequest):
+-    try:
+-        return {"ok": True, "reply": generate_smoke_test_reply(body.prompt)}
+-    except SarvamNotConfigured as exc:
+-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+-    except Exception as exc:
+-        # Avoid returning provider headers, credentials, or raw SDK internals to callers.
+-        raise HTTPException(status_code=502, detail="Sarvam request failed. Check server logs and Sarvam account/key status.") from exc
++    try: return {"ok": True, "reply": generate_smoke_test_reply(body.prompt)}
++    except SarvamNotConfigured as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
++    except Exception as exc: raise HTTPException(status_code=502, detail="Sarvam request failed. Check server logs and Sarvam account/key status.") from exc
++
++@app.post("/api/products/lookup")
++def product_lookup(body: ProductLookup):
++    return lookup_product(body.product_name, body.model_number, body.serial_number, body.warranty_number)
++
++@app.post("/api/prices/lookup")
++def price_lookup(body: PriceLookup):
++    return lookup_price(body.product_name, body.issue_code)
++
++@app.post("/api/requests")
++def requests_create(body: RequestCreate):
++    result=create_request(body.model_dump())
++    if not result.get("created") and body.request_type == "complaint":
++        raise HTTPException(status_code=409, detail=result["message"])
++    return result
++
++@app.get("/api/demo/requests")
++def list_demo_requests(limit: int = 50):
++    limit=max(1,min(limit,100))
++    with connection() as conn:
++        rows=conn.execute("SELECT id,request_type,customer_name,phone,product_name,issue_description,status,created_at FROM service_requests ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
++    return {"items":[dict(r) for r in rows]}
+diff --git a/aivoice/app/schemas.py b/aivoice/app/schemas.py
+new file mode 100644
+index 0000000..5af69e5
+--- /dev/null
++++ b/aivoice/app/schemas.py
+@@ -0,0 +1,36 @@
++from pydantic import BaseModel, Field
++from typing import Literal, Optional
++
++class CustomerFields(BaseModel):
++    name: str = Field(min_length=1, max_length=120)
++    address: Optional[str] = Field(default=None, max_length=300)
++    phone: Optional[str] = Field(default=None, max_length=30)
++    pincode: Optional[str] = Field(default=None, max_length=12)
++
++class ProductLookup(BaseModel):
++    product_name: Optional[str] = Field(default=None, max_length=120)
++    model_number: Optional[str] = Field(default=None, max_length=120)
++    serial_number: Optional[str] = Field(default=None, max_length=120)
++    warranty_number: Optional[str] = Field(default=None, max_length=120)
++
++class PriceLookup(BaseModel):
++    product_name: str = Field(min_length=1, max_length=120)
++    issue_code: str = Field(min_length=1, max_length=80)
++
++class RequestCreate(BaseModel):
++    request_type: Literal["complaint", "callback", "appointment"]
++    customer_name: str = Field(min_length=1, max_length=120)
++    phone: Optional[str] = Field(default=None, max_length=30)
++    address: Optional[str] = Field(default=None, max_length=300)
++    pincode: Optional[str] = Field(default=None, max_length=12)
++    product_name: Optional[str] = Field(default=None, max_length=120)
++    model_number: Optional[str] = Field(default=None, max_length=120)
++    serial_number: Optional[str] = Field(default=None, max_length=120)
++    invoice_number: Optional[str] = Field(default=None, max_length=120)
++    warranty_number: Optional[str] = Field(default=None, max_length=120)
++    issue_description: Optional[str] = Field(default=None, max_length=2000)
++    requested_date: Optional[str] = Field(default=None, max_length=30)
++    requested_time: Optional[str] = Field(default=None, max_length=30)
++    customer_confirmed: bool = False
++    interaction_id: Optional[str] = Field(default=None, max_length=150)
++    idempotency_key: Optional[str] = Field(default=None, max_length=180)
+diff --git a/aivoice/app/workflows.py b/aivoice/app/workflows.py
+new file mode 100644
+index 0000000..acf0d1c
+--- /dev/null
++++ b/aivoice/app/workflows.py
+@@ -0,0 +1,61 @@
++from datetime import date
++from .database import connection, now_iso
++
++def _dict(row):
++    return dict(row) if row else None
++
++def lookup_product(product_name=None, model_number=None, serial_number=None, warranty_number=None):
++    clauses=[]; values=[]
++    if serial_number: clauses.append("serial_number = ?"); values.append(serial_number.strip())
++    if model_number: clauses.append("model_number = ?"); values.append(model_number.strip())
++    if warranty_number: clauses.append("warranty_number = ?"); values.append(warranty_number.strip())
++    if product_name: clauses.append("lower(product_name) = lower(?)"); values.append(product_name.strip())
++    if not clauses:
++        return {"found": False, "message": "Provide a product name, model number, serial number, or warranty number to search."}
++    with connection() as conn:
++        row=conn.execute("SELECT p.*, c.name AS customer_name, c.phone AS customer_phone FROM products p LEFT JOIN customers c ON c.id=p.customer_id WHERE " + " OR ".join(clauses) + " ORDER BY CASE WHEN serial_number IS NOT NULL THEN 0 ELSE 1 END LIMIT 1", values).fetchone()
++    if not row:
++        return {"found": False, "message": "Product master will be added."}
++    result=_dict(row)
++    expiry=result.get("warranty_expiry_date")
++    status=(result.get("warranty_status") or "unknown").lower()
++    if expiry:
++        try:
++            status="valid" if date.fromisoformat(expiry) >= date.today() else "expired"
++        except ValueError:
++            status="unknown"
++    else:
++        status="unknown" if status not in ("valid", "expired", "not_applicable") else status
++    result["warranty_status_calculated"]=status
++    result["warranty_confirmed"]=status in ("valid", "expired", "not_applicable") and bool(expiry or result.get("warranty_policy"))
++    result["message"] = "Warranty status is based on the demo record; verify the applicable policy before making a final coverage decision." if result["warranty_confirmed"] else "Warranty coverage cannot be confirmed from the available record. A technician callback can be requested."
++    return {"found": True, "product": result}
++
++def lookup_price(product_name, issue_code):
++    with connection() as conn:
++        row=conn.execute("SELECT product_name,issue_code,issue_label,min_price,max_price,currency,approved_by,approved_at FROM approved_prices WHERE lower(product_name)=lower(?) AND lower(issue_code)=lower(?) AND active=1", (product_name.strip(),issue_code.strip())).fetchone()
++    if not row:
++        return {"price_available": False, "message": "No approved service price is available for this product and issue. Do not quote a price; offer a technician callback."}
++    return {"price_available": True, "estimate": _dict(row), "message": "This is an approved estimate range, not a final quote. Confirm scope with the technician."}
++
++def create_request(data: dict):
++    typ=data["request_type"]
++    if typ == "complaint" and not data.get("customer_confirmed"):
++        return {"created": False, "message": "Before registering a complaint, summarize the details and obtain customer confirmation."}
++    idem=data.get("idempotency_key")
++    with connection() as conn:
++        if idem:
++            existing=conn.execute("SELECT id,request_type,status,created_at FROM service_requests WHERE idempotency_key=?",(idem,)).fetchone()
++            if existing:
++                return {"created": True, "duplicate": True, "request": _dict(existing), "message": "This request was already recorded."}
++        conn.execute("INSERT INTO customers(name,address,phone,pincode,created_at) VALUES(?,?,?,?,?)", (data["customer_name"],data.get("address"),data.get("phone"),data.get("pincode"),now_iso()))
++        customer_id=conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++        product_id=None
++        if data.get("serial_number"):
++            p=conn.execute("SELECT id FROM products WHERE serial_number=?",(data["serial_number"],)).fetchone()
++            product_id=p[0] if p else None
++        status="pending"
++        conn.execute("INSERT INTO service_requests(request_type,customer_id,product_id,customer_name,phone,address,pincode,product_name,model_number,serial_number,invoice_number,warranty_number,issue_description,requested_date,requested_time,status,confirmation_text,interaction_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (typ,customer_id,product_id,data["customer_name"],data.get("phone"),data.get("address"),data.get("pincode"),data.get("product_name"),data.get("model_number"),data.get("serial_number"),data.get("invoice_number"),data.get("warranty_number"),data.get("issue_description"),data.get("requested_date"),data.get("requested_time"),status,"Customer confirmed complaint details" if typ=="complaint" else "Request recorded; pending human/scheduling confirmation",data.get("interaction_id"),idem,now_iso()))
++        rid=conn.execute("SELECT last_insert_rowid()").fetchone()[0]
++    msg={"complaint":"Complaint details recorded in the demo system.","callback":"Callback request recorded as pending; no technician has been assigned or called yet.","appointment":"Appointment request recorded as pending; no appointment time is confirmed."}[typ]
++    return {"created": True, "request": {"id":rid,"request_type":typ,"status":status}, "message":msg}
