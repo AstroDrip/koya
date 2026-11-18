@@ -1,0 +1,41 @@
+MR CARE AI Receptionist — Patch 006: Separate confirmed write API
+
+WHAT THIS ADDS
+- app/public_write_api.py: a separately runnable, authenticated FastAPI app for only confirmed demo write requests.
+- Separate MRCARE_WRITE_TOOL_SECRET credential (does not reuse the read-only credential).
+- Requires customer_confirmed=true, a non-empty confirmation summary, caller interaction ID, contact phone, product and issue details.
+- Callback/appointment requests require a customer-stated preferred date or time.
+- Adds an action-scoped idempotency key derived from Sarvam Interaction ID to avoid duplicate entries on tool retries.
+- Stores the confirmation summary and returns request status as pending. It does not assign a technician or confirm a visit/callback.
+- Adds tests that use an isolated temporary SQLite database, not your normal demo DB.
+
+APPLY
+1. Back up C:\Users\HP\Desktop\aivoice.
+2. Extract this ZIP into C:\Users\HP\Desktop\aivoice, merging its patches folder with the existing one. Do not replace .env.
+3. Open PowerShell in C:\Users\HP\Desktop (the parent of aivoice) and run:
+
+   git apply --check .\aivoice\patches\006-confirmed-write-api.patch
+
+4. Apply only if the check succeeds:
+
+   git apply .\aivoice\patches\006-confirmed-write-api.patch
+
+5. Run local syntax checks:
+
+   Set-Location "$HOME\Desktop\aivoice"
+   .\.venv\Scripts\python.exe -m py_compile .\app\public_write_api.py .\app\workflows.py .\app\config.py
+
+6. Run the isolated safety test suite:
+
+   .\.venv\Scripts\python.exe .\tests\test_public_write_api_local.py
+
+   The test uses its own temporary database and test-only secret, then deletes the temporary database. It should not create test requests in your usual demo database.
+
+ENVIRONMENT
+- Add a separate MRCARE_WRITE_TOOL_SECRET to your existing .env only after the patch is applied.
+- Do not reuse MRCARE_TOOL_SECRET, do not share either secret, and do not overwrite your Sarvam API key.
+- Generate a new 32-byte random secret and keep it in a protected local file and Sarvam's masked secret store.
+
+DO NOT expose this write API to the Internet yet. First apply the patch and pass the isolated tests. After that, configure its secret locally, test the running service on 127.0.0.1:8003, and then decide whether to expose only this separate endpoint through a temporary HTTPS tunnel for Sarvam.
+
+The write API only records a pending request after the agent collects explicit customer confirmation. No real customer calls, WhatsApp messages, technician assignment, or appointment booking are performed. Do not connect to Ligs or production systems.

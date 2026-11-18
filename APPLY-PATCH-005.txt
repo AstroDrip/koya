@@ -1,0 +1,27 @@
+MR CARE patch 005 — separate read-only Sarvam integration API
+
+Why this patch exists
+The main demo backend on port 8001 has several local endpoints. Do not expose that entire application through a public tunnel. This patch adds a second FastAPI app that only serves read-only product/warranty/approved-price lookups and requires X-MRCARE-Tool-Key. Swagger/OpenAPI docs are disabled on this second app.
+
+Apply from C:\Users\HP\Desktop in PowerShell:
+
+  Set-Location "$HOME\Desktop"
+  git apply --check .\patches\005-read-only-sarvam-api.patch
+  git apply .\patches\005-read-only-sarvam-api.patch
+
+If your patch ZIP extracts to a different folder, update the patch path accordingly. Do not force a failed patch.
+
+Then run a local syntax check and start the read-only API:
+
+  Set-Location "$HOME\Desktop\aivoice"
+  .\.venv\Scripts\python.exe -m py_compile .\app\public_api.py
+  .\.venv\Scripts\python.exe -m uvicorn app.public_api:app --host 127.0.0.1 --port 8002
+
+Keep the API bound to 127.0.0.1. Do not expose/tunnel it yet. The next step is to test it locally, then configure a temporary HTTPS tunnel and a Sarvam API tool with a fixed read-only action.
+
+The endpoint is POST /api/voice-lookup. Supported action values only:
+  - lookup_product
+  - check_warranty
+  - lookup_approved_price
+
+The request must include X-MRCARE-Tool-Key using the same MRCARE_TOOL_SECRET stored in your .env. This endpoint does not register complaints, callbacks, or appointments.

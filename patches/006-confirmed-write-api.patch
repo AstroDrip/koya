@@ -1,0 +1,380 @@
+diff --git a/aivoice/.env.example b/aivoice/.env.example
+index a7bb350..7dd5577 100644
+--- a/aivoice/.env.example
++++ b/aivoice/.env.example
+@@ -1,5 +1,6 @@
+ SARVAM_API_KEY=your_sarvam_key_here
+ MRCARE_TOOL_SECRET=replace_with_a_long_random_secret
++MRCARE_WRITE_TOOL_SECRET=generate_a_different_long_random_secret
+ MRCARE_DB_PATH=./data/mrcare_demo.sqlite3
+ HOST=127.0.0.1
+ PORT=8000
+diff --git a/aivoice/README.md b/aivoice/README.md
+index 88347b4..7ab273f 100644
+--- a/aivoice/README.md
++++ b/aivoice/README.md
+@@ -219,4 +219,27 @@ Initial expected peak concurrency discussed: **1–5 simultaneous calls**, with
+ - Demo pricing records must be populated only from MR CARE-approved prices. No default service price is seeded.
+ - SQLite is intended for local demonstration, not high availability or multiple production instances.
+ - Current code is a starting demo implementation, not certified for production or emergency use.
+-\n\n## 17. Webhook contract added by patch 004\n\nThe protected `POST /api/voice-tool` endpoint expects the `X-MRCARE-Tool-Key` header and a JSON body. It supports these action names: `lookup_product`, `check_warranty`, `lookup_approved_price`, `register_complaint`, `request_callback`, `request_appointment`. For example, a **local-only test** can send `{"action":"lookup_product","model_number":"DEMO-AF-01"}`. For a complaint, include `customer_confirmed: true`; otherwise it is rejected. Use `interaction_id` and a stable `idempotency_key` to reduce duplicate records when tools retry.\n\nIn Samvaad, map the body fields to the agent's captured variables using its variable picker and configure the header via a secure secret. Test the tool's request/response using the current workspace's Test button; do not assume the provider's UI has exactly the same fields as an older screenshot. Do not send full call transcripts unless there is a documented reason.\n\n**Important:** this endpoint is a starter adapter, not a guarantee that every Sarvam workspace emits the same body shape. First test a mock tool, then test the real endpoint with a minimal lookup, then enable write actions. Keep it private until authentication, HTTPS, validation, idempotency, and timeout behavior have been verified.\n
+\ No newline at end of file
++
++
++## 17. Webhook contract added by patch 004
++
++The protected `POST /api/voice-tool` endpoint expects the `X-MRCARE-Tool-Key` header and a JSON body. It supports these action names: `lookup_product`, `check_warranty`, `lookup_approved_price`, `register_complaint`, `request_callback`, `request_appointment`. For example, a **local-only test** can send `{"action":"lookup_product","model_number":"DEMO-AF-01"}`. For a complaint, include `customer_confirmed: true`; otherwise it is rejected. Use `interaction_id` and a stable `idempotency_key` to reduce duplicate records when tools retry.
++
++In Samvaad, map the body fields to the agent's captured variables using its variable picker and configure the header via a secure secret. Test the tool's request/response using the current workspace's Test button; do not assume the provider's UI has exactly the same fields as an older screenshot. Do not send full call transcripts unless there is a documented reason.
++
++**Important:** this endpoint is a starter adapter, not a guarantee that every Sarvam workspace emits the same body shape. First test a mock tool, then test the real endpoint with a minimal lookup, then enable write actions. Keep it private until authentication, HTTPS, validation, idempotency, and timeout behavior have been verified.
++
++## 18. Separate confirmed write API (patch 006)
++
++`app.public_write_api` is a narrow second FastAPI app intended for local-demo testing on `127.0.0.1:8003`. It exposes only `GET /healthz` and authenticated `POST /api/voice-request`; docs/OpenAPI are disabled. It uses a separate `MRCARE_WRITE_TOOL_SECRET` in the `X-MRCARE-Write-Key` header, not the read-only lookup credential.
++
++Supported actions are `register_complaint`, `request_callback`, and `request_appointment`. Every write requires a non-blank customer name and contact phone, product and issue information, a Sarvam Interaction ID, an explicit `customer_confirmed: true` signal, and a concise `confirmation_text` representing the summary the customer confirmed. Callback/appointment requests also require a customer-stated preferred date or time. The API assigns an idempotency key from the Interaction ID plus action when the tool doesn't supply one, preventing repeated tool calls for the same request from creating duplicate records. Stored requests remain `pending`: no technician is assigned, no callback is guaranteed, and no appointment time is confirmed.
++
++Local-only launch command (after adding a new, independent `MRCARE_WRITE_TOOL_SECRET` to `.env`):
++
++```powershell
++.\.venv\Scripts\python.exe -m uvicorn app.public_write_api:app --host 127.0.0.1 --port 8003
++```
++
++Test this API locally first. Do not expose it through HTTPS or configure Sarvam's write tools until authentication, missing-confirmation rejection, missing-interaction-ID rejection, valid pending creation, and idempotent retry have passed. Use Sarvam's built-in `Interaction ID` call-context variable, not a customer-provided variable. This demo API is not connected to Ligs or production systems and must not be treated as a real technician scheduler.
++
+diff --git a/aivoice/app/config.py b/aivoice/app/config.py
+index 46a8e3c..ce97d69 100644
+--- a/aivoice/app/config.py
++++ b/aivoice/app/config.py
+@@ -15,3 +15,5 @@ def get_db_path() -> Path:
+ 
+ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+ MRCARE_TOOL_SECRET = os.getenv("MRCARE_TOOL_SECRET", "").strip()
++
++MRCARE_WRITE_TOOL_SECRET = os.getenv("MRCARE_WRITE_TOOL_SECRET", "").strip()
+diff --git a/aivoice/app/public_write_api.py b/aivoice/app/public_write_api.py
+new file mode 100644
+index 0000000..c8a0d32
+--- /dev/null
++++ b/aivoice/app/public_write_api.py
+@@ -0,0 +1,184 @@
++"""Separate, narrowly scoped authenticated write API for the MR CARE demo.
++
++Run only after local verification:
++  python -m uvicorn app.public_write_api:app --host 127.0.0.1 --port 8003
++
++This service has no docs/OpenAPI routes and only creates explicitly confirmed,
++pending demo service requests. It is not connected to Ligs or production systems.
++"""
++
++import secrets
++import sqlite3
++from typing import Literal, Optional
++
++from fastapi import FastAPI, Header, HTTPException
++from pydantic import BaseModel, ConfigDict, Field, field_validator
++
++from .config import MRCARE_WRITE_TOOL_SECRET
++from .database import init_db, connection
++from .workflows import create_request
++
++app = FastAPI(
++    title="MR CARE Confirmed Demo Write API",
++    version="0.1.0",
++    docs_url=None,
++    redoc_url=None,
++    openapi_url=None,
++)
++
++
++class VoiceWritePayload(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++
++    action: Literal["register_complaint", "request_callback", "request_appointment"]
++    customer_name: str = Field(min_length=1, max_length=120)
++    phone: str = Field(min_length=5, max_length=30)
++    address: Optional[str] = Field(default=None, max_length=300)
++    pincode: Optional[str] = Field(default=None, max_length=12)
++    product_name: str = Field(min_length=1, max_length=120)
++    model_number: Optional[str] = Field(default=None, max_length=120)
++    serial_number: Optional[str] = Field(default=None, max_length=120)
++    invoice_number: Optional[str] = Field(default=None, max_length=120)
++    warranty_number: Optional[str] = Field(default=None, max_length=120)
++    issue_description: str = Field(min_length=1, max_length=2000)
++    requested_date: Optional[str] = Field(default=None, max_length=80)
++    requested_time: Optional[str] = Field(default=None, max_length=80)
++    customer_confirmed: bool = False
++    confirmation_text: str = Field(min_length=10, max_length=800)
++    interaction_id: str = Field(min_length=5, max_length=150)
++    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=180)
++
++    @field_validator(
++        "customer_name", "phone", "product_name", "issue_description",
++        "confirmation_text", "interaction_id", mode="before"
++    )
++    @classmethod
++    def required_strings_must_not_be_blank(cls, value):
++        if not isinstance(value, str):
++            return value
++        value = value.strip()
++        if not value:
++            raise ValueError("This field must not be blank.")
++        return value
++
++    @field_validator(
++        "address", "pincode", "model_number", "serial_number", "invoice_number",
++        "warranty_number", "requested_date", "requested_time", "idempotency_key",
++        mode="before"
++    )
++    @classmethod
++    def optional_strings_trim(cls, value):
++        if isinstance(value, str):
++            value = value.strip()
++            return value or None
++        return value
++
++
++@app.on_event("startup")
++def startup():
++    init_db()
++
++
++@app.get("/healthz")
++def healthz():
++    # The status endpoint exposes no user data, secrets, or DB contents.
++    return {"ok": True, "service": "mrcare-confirmed-demo-write-api"}
++
++
++def _authenticate(x_mrcare_write_key: Optional[str]) -> None:
++    if not MRCARE_WRITE_TOOL_SECRET:
++        raise HTTPException(
++            status_code=503,
++            detail="Write API secret is not configured on the backend.",
++        )
++    if not x_mrcare_write_key or not secrets.compare_digest(
++        x_mrcare_write_key, MRCARE_WRITE_TOOL_SECRET
++    ):
++        raise HTTPException(status_code=401, detail="Unauthorized")
++
++
++@app.post("/api/voice-request")
++def voice_request(
++    payload: VoiceWritePayload,
++    x_mrcare_write_key: Optional[str] = Header(
++        default=None, alias="X-MRCARE-Write-Key"
++    ),
++):
++    _authenticate(x_mrcare_write_key)
++
++    if not payload.customer_confirmed:
++        raise HTTPException(
++            status_code=409,
++            detail="Explicit customer confirmation is required before recording this request.",
++        )
++
++    action_to_type = {
++        "register_complaint": "complaint",
++        "request_callback": "callback",
++        "request_appointment": "appointment",
++    }
++    request_type = action_to_type[payload.action]
++
++    # Every write needs enough context for a technician to understand the issue.
++    if request_type == "complaint" and not payload.issue_description.strip():
++        raise HTTPException(status_code=422, detail="issue_description is required for a complaint.")
++
++    # For follow-up requests, insist on a stated preference rather than silently
++    # inventing a date/time. A natural-language value is retained verbatim.
++    if request_type in ("callback", "appointment") and not (
++        payload.requested_date or payload.requested_time
++    ):
++        raise HTTPException(
++            status_code=422,
++            detail="Provide the customer's preferred date or time before recording this follow-up request.",
++        )
++
++    # The call's Interaction ID is supplied by Sarvam's call-context variable.
++    # Use a deterministic action-scoped key so retried tools do not make duplicates.
++    idempotency_key = payload.idempotency_key or f"{payload.interaction_id}:{payload.action}"
++    data = payload.model_dump()
++    data["request_type"] = request_type
++    data["idempotency_key"] = idempotency_key
++
++    try:
++        result = create_request(data)
++    except sqlite3.IntegrityError as exc:
++        # If concurrent retries race on the unique idempotency index, return the
++        # already-created request; do not blindly attempt another insert.
++        with connection() as conn:
++            existing = conn.execute(
++                "SELECT id, request_type, status, created_at FROM service_requests WHERE idempotency_key = ?",
++                (idempotency_key,),
++            ).fetchone()
++        if not existing:
++            raise HTTPException(status_code=409, detail="The request could not be recorded safely.") from exc
++        result = {
++            "created": True,
++            "duplicate": True,
++            "request": dict(existing),
++            "message": "This request was already recorded.",
++        }
++
++    if not result.get("created"):
++        raise HTTPException(
++            status_code=409,
++            detail=result.get("message", "The request was not recorded."),
++        )
++
++    req = result.get("request") or {}
++    message = result.get("message", "Request recorded as pending in the demo system.")
++    return {
++        "ok": True,
++        "created": True,
++        "duplicate": bool(result.get("duplicate", False)),
++        "request": {
++            "id": req.get("id"),
++            "request_type": req.get("request_type", request_type),
++            "status": req.get("status", "pending"),
++        },
++        "message": message,
++        "warning": (
++            "This records a pending demo request only. It does not assign a technician, "
++            "confirm a callback, or book an appointment."
++        ),
++    }
+diff --git a/aivoice/app/workflows.py b/aivoice/app/workflows.py
+index acf0d1c..dc67ba1 100644
+--- a/aivoice/app/workflows.py
++++ b/aivoice/app/workflows.py
+@@ -55,7 +55,7 @@ def create_request(data: dict):
+             p=conn.execute("SELECT id FROM products WHERE serial_number=?",(data["serial_number"],)).fetchone()
+             product_id=p[0] if p else None
+         status="pending"
+-        conn.execute("INSERT INTO service_requests(request_type,customer_id,product_id,customer_name,phone,address,pincode,product_name,model_number,serial_number,invoice_number,warranty_number,issue_description,requested_date,requested_time,status,confirmation_text,interaction_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (typ,customer_id,product_id,data["customer_name"],data.get("phone"),data.get("address"),data.get("pincode"),data.get("product_name"),data.get("model_number"),data.get("serial_number"),data.get("invoice_number"),data.get("warranty_number"),data.get("issue_description"),data.get("requested_date"),data.get("requested_time"),status,"Customer confirmed complaint details" if typ=="complaint" else "Request recorded; pending human/scheduling confirmation",data.get("interaction_id"),idem,now_iso()))
++        conn.execute("INSERT INTO service_requests(request_type,customer_id,product_id,customer_name,phone,address,pincode,product_name,model_number,serial_number,invoice_number,warranty_number,issue_description,requested_date,requested_time,status,confirmation_text,interaction_id,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (typ,customer_id,product_id,data["customer_name"],data.get("phone"),data.get("address"),data.get("pincode"),data.get("product_name"),data.get("model_number"),data.get("serial_number"),data.get("invoice_number"),data.get("warranty_number"),data.get("issue_description"),data.get("requested_date"),data.get("requested_time"),status,data.get("confirmation_text") or ("Customer confirmed complaint details" if typ=="complaint" else "Request recorded; pending human/scheduling confirmation"),data.get("interaction_id"),idem,now_iso()))
+         rid=conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+     msg={"complaint":"Complaint details recorded in the demo system.","callback":"Callback request recorded as pending; no technician has been assigned or called yet.","appointment":"Appointment request recorded as pending; no appointment time is confirmed."}[typ]
+     return {"created": True, "request": {"id":rid,"request_type":typ,"status":status}, "message":msg}
+diff --git a/aivoice/tests/test_public_write_api_local.py b/aivoice/tests/test_public_write_api_local.py
+new file mode 100644
+index 0000000..f03fc1a
+--- /dev/null
++++ b/aivoice/tests/test_public_write_api_local.py
+@@ -0,0 +1,116 @@
++"""Self-contained local smoke test for app.public_write_api.
++
++Run with the project's Python environment:
++  .\\.venv\\Scripts\\python.exe .\\tests\\test_public_write_api_local.py
++
++Uses a temporary SQLite file and a test-only secret. It never touches the demo DB
++configured in .env and removes its temporary DB when it exits.
++"""
++from __future__ import annotations
++
++import os
++import sqlite3
++import tempfile
++import sys
++from pathlib import Path
++from uuid import uuid4
++
++# Ensure the project root is importable when this file is run directly.
++project_root = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(project_root))
++
++# Set these before importing the app: config reads secrets at import time.
++test_dir = Path(tempfile.gettempdir())
++test_db = test_dir / f"mrcare-write-test-{uuid4().hex}.sqlite3"
++test_secret = "TEST_ONLY_" + uuid4().hex + uuid4().hex
++os.environ["MRCARE_DB_PATH"] = str(test_db)
++os.environ["MRCARE_WRITE_TOOL_SECRET"] = test_secret
++
++from fastapi.testclient import TestClient  # noqa: E402
++from app.public_write_api import app  # noqa: E402
++
++
++def assert_status(label, response, expected):
++    print(f"{label}: HTTP {response.status_code}")
++    if response.status_code != expected:
++        print(response.text)
++        raise AssertionError(f"{label}: expected {expected}, got {response.status_code}")
++
++
++base_payload = {
++    "action": "request_callback",
++    "customer_name": "TEST ONLY - Write API Customer",
++    "phone": "9000000001",
++    "address": "TEST ONLY - Demo locality",
++    "pincode": "673001",
++    "product_name": "Demo Air Fryer",
++    "model_number": "DEMO-AF-01",
++    "issue_description": "TEST ONLY - simulated air fryer not heating",
++    "requested_date": "tomorrow",
++    "requested_time": "5 PM",
++    "customer_confirmed": True,
++    "confirmation_text": "Customer explicitly confirmed this test callback request after hearing the summary.",
++    "interaction_id": "LOCALTEST-" + uuid4().hex,
++}
++
++try:
++    with TestClient(app) as client:
++        r = client.get("/healthz")
++        assert_status("1. Health check", r, 200)
++        assert r.json().get("service") == "mrcare-confirmed-demo-write-api"
++
++        r = client.post("/api/voice-request", json=base_payload)
++        assert_status("2. Missing authentication", r, 401)
++
++        r = client.post(
++            "/api/voice-request",
++            headers={"X-MRCARE-Write-Key": test_secret},
++            json={**base_payload, "customer_confirmed": False},
++        )
++        assert_status("3. Unconfirmed request", r, 409)
++
++        no_interaction = dict(base_payload)
++        no_interaction.pop("interaction_id")
++        r = client.post(
++            "/api/voice-request",
++            headers={"X-MRCARE-Write-Key": test_secret},
++            json=no_interaction,
++        )
++        assert_status("4. Missing interaction ID", r, 422)
++
++        no_time = dict(base_payload)
++        no_time.pop("requested_date")
++        no_time.pop("requested_time")
++        r = client.post(
++            "/api/voice-request",
++            headers={"X-MRCARE-Write-Key": test_secret},
++            json=no_time,
++        )
++        assert_status("5. Callback without preferred date/time", r, 422)
++
++        headers = {"X-MRCARE-Write-Key": test_secret}
++        r = client.post("/api/voice-request", headers=headers, json=base_payload)
++        assert_status("6. Confirmed callback request", r, 200)
++        result = r.json()
++        assert result.get("created") is True
++        assert result.get("request", {}).get("status") == "pending"
++        assert "does not assign a technician" in result.get("warning", "")
++        print("   Created pending request:", result["request"])
++
++        # The same action + interaction ID is idempotent, not a second insert.
++        r = client.post("/api/voice-request", headers=headers, json=base_payload)
++        assert_status("7. Duplicate retry", r, 200)
++        assert r.json().get("duplicate") is True
++
++        with sqlite3.connect(test_db) as conn:
++            count = conn.execute("SELECT COUNT(*) FROM service_requests").fetchone()[0]
++        print("8. Stored requests in isolated temporary DB:", count)
++        assert count == 1, f"Expected exactly one request after retry; found {count}"
++
++    print("ALL LOCAL WRITE API TESTS PASSED")
++finally:
++    for suffix in ("", "-wal", "-shm"):
++        try:
++            Path(str(test_db) + suffix).unlink(missing_ok=True)
++        except OSError:
++            pass
