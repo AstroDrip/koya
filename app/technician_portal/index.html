@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>My jobs | MR CARE</title>
+    <link rel="stylesheet" href="/technician/assets/portal.css">
+    <script defer src="/technician/assets/portal.js"></script>
+</head>
+<body>
+    <header>
+        <strong>MR CARE</strong>
+        <button id="sign-out" type="button" hidden>Sign out</button>
+    </header>
+    <main>
+        <section id="entry" class="panel">
+            <h1>Technician sign-in</h1>
+            <form id="sign-in">
+                <label for="session">Session token</label>
+                <input id="session" type="password" autocomplete="off" maxlength="43" required>
+                <button type="submit">Open my jobs</button>
+            </form>
+        </section>
+        <p id="message" role="status" aria-live="polite"></p>
+        <section id="workspace" hidden>
+            <div class="section-header">
+                <div><h1>My jobs</h1><p id="identity"></p></div>
+                <button id="reload" type="button">Refresh</button>
+            </div>
+            <ul id="job-list" class="cards"></ul>
+            <section id="detail" class="panel" tabindex="-1" hidden></section>
+            <h2>Notifications</h2>
+            <ul id="notifications" class="cards"></ul>
+        </section>
+    </main>
+</body>
+</html>

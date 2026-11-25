@@ -1,0 +1,69 @@
+name: Local API checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements-production.txt
+      - name: Run each isolated script in a separate process
+        env:
+          PYTHONPATH: .
+        run: |
+          set -e
+          for test in tests/test_*_local.py test_phone_validation.py; do
+            python "$test"
+          done
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: koya_load_ci
+          POSTGRES_USER: koya
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U koya -d koya_load_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements-production.txt
+      - name: PostgreSQL import, Redis, and HTTP capacity smoke
+        env:
+          MRCARE_TEST_DATABASE_URL: postgresql://koya:synthetic-ci-only@127.0.0.1:5432/koya_load_ci
+          MRCARE_REDIS_URL: redis://127.0.0.1:6379/0
+        run: python -m scripts.load_capacity --rounds 1
+      - name: Logical backup and restore validation
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -eu
+          docker exec "$PG_CONTAINER" pg_dump -U koya -Fc -f /tmp/koya-fixture.dump koya_load_ci
+          docker exec "$PG_CONTAINER" pg_restore --list /tmp/koya-fixture.dump
+          docker exec "$PG_CONTAINER" createdb -U koya koya_restore_ci
+          docker exec "$PG_CONTAINER" pg_restore -U koya --exit-on-error -d koya_restore_ci /tmp/koya-fixture.dump
+          sql="SELECT (SELECT count(*) FROM crm_cases),(SELECT count(*) FROM voice_calls),(SELECT count(*) FROM fin_invoices),(SELECT sum(total_paise) FROM fin_invoices),(SELECT count(*) FROM ops_events)"
+          original=$(docker exec "$PG_CONTAINER" psql -X -A -t -U koya -d koya_load_ci -c "$sql")
+          restored=$(docker exec "$PG_CONTAINER" psql -X -A -t -U koya -d koya_restore_ci -c "$sql")
+          test "$original" = "$restored"

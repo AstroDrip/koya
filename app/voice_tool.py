@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from .config import MRCARE_TOOL_SECRET
-from .workflows import lookup_product, lookup_price, create_request
+from .workflows import RequestRejected, lookup_product, lookup_price, submit_request
 
 router = APIRouter()
 
@@ -31,7 +31,7 @@ class VoiceToolPayload(BaseModel):
 def voice_tool(payload: VoiceToolPayload, x_mrcare_tool_key: Optional[str] = Header(default=None, alias="X-MRCARE-Tool-Key")):
     if not MRCARE_TOOL_SECRET:
         raise HTTPException(status_code=503, detail="Webhook secret is not configured on the backend.")
-    if not x_mrcare_tool_key or not secrets.compare_digest(x_mrcare_tool_key, MRCARE_TOOL_SECRET):
+    if not x_mrcare_tool_key or not secrets.compare_digest(x_mrcare_tool_key.encode(), MRCARE_TOOL_SECRET.encode()):
         raise HTTPException(status_code=401, detail="Unauthorized")
     action=payload.action.strip().lower()
     if action in ("lookup_product", "check_warranty"):
@@ -79,7 +79,10 @@ def voice_tool(payload: VoiceToolPayload, x_mrcare_tool_key: Optional[str] = Hea
         if not data.get("idempotency_key"):
             data["idempotency_key"] = f"{payload.interaction_id}:{typ}"
 
-        result = create_request(data)
+        try:
+            result = submit_request(data)
+        except RequestRejected as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
         if not result.get("created"):
             raise HTTPException(

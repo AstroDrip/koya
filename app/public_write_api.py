@@ -7,17 +7,24 @@ This service has no docs/OpenAPI routes and only creates explicitly confirmed,
 pending demo service requests. It is not connected to Ligs or production systems.
 """
 
+from contextlib import asynccontextmanager
 import secrets
-import sqlite3
 from typing import Literal, Optional
-import re
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import MRCARE_WRITE_TOOL_SECRET
-from .database import init_db, connection
-from .workflows import create_request
+from .database import start_demo
+from .readiness import router as readiness_router
+from .reliability_api import install_reliability
+from .workflows import RequestRejected, normalize_indian_mobile, submit_request
+
+@asynccontextmanager
+async def lifespan(app):
+    start_demo()
+    yield
+
 
 app = FastAPI(
     title="MR CARE Confirmed Demo Write API",
@@ -25,7 +32,10 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
+app.include_router(readiness_router)
+install_reliability(app, "voice-write")
 
 
 class VoiceWritePayload(BaseModel):
@@ -78,30 +88,7 @@ class VoiceWritePayload(BaseModel):
     @field_validator("phone", mode="before")
     @classmethod
     def normalize_and_validate_indian_mobile(cls, value):
-        if value is None or isinstance(value, bool):
-            raise ValueError("A valid Indian mobile number is required.")
-
-        raw = str(value).strip()
-        if not raw:
-            raise ValueError("A valid Indian mobile number is required.")
-
-        normalized = re.sub(r"[\s().-]", "", raw)
-
-        if normalized.startswith("+91"):
-            normalized = normalized[3:]
-        elif normalized.startswith("91") and len(normalized) == 12:
-            normalized = normalized[2:]
-
-        if not re.fullmatch(r"[6-9]\d{9}", normalized):
-            raise ValueError(
-                "Enter a valid 10-digit Indian mobile number, optionally prefixed by +91."
-            )
-
-        return normalized
-
-@app.on_event("startup")
-def startup():
-    init_db()
+        return normalize_indian_mobile(value)
 
 
 @app.get("/healthz")
@@ -117,7 +104,7 @@ def _authenticate(x_mrcare_write_key: Optional[str]) -> None:
             detail="Write API secret is not configured on the backend.",
         )
     if not x_mrcare_write_key or not secrets.compare_digest(
-        x_mrcare_write_key, MRCARE_WRITE_TOOL_SECRET
+        x_mrcare_write_key.encode(), MRCARE_WRITE_TOOL_SECRET.encode()
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -144,20 +131,6 @@ def voice_request(
     }
     request_type = action_to_type[payload.action]
 
-    # Every write needs enough context for a technician to understand the issue.
-    if request_type == "complaint" and not payload.issue_description.strip():
-        raise HTTPException(status_code=422, detail="issue_description is required for a complaint.")
-
-    # For follow-up requests, insist on a stated preference rather than silently
-    # inventing a date/time. A natural-language value is retained verbatim.
-    if request_type in ("callback", "appointment") and not (
-        payload.requested_date or payload.requested_time
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Provide the customer's preferred date or time before recording this follow-up request.",
-        )
-
     # The call's Interaction ID is supplied by Sarvam's call-context variable.
     # Use a deterministic action-scoped key so retried tools do not make duplicates.
     idempotency_key = payload.idempotency_key or f"{payload.interaction_id}:{payload.action}"
@@ -166,29 +139,9 @@ def voice_request(
     data["idempotency_key"] = idempotency_key
 
     try:
-        result = create_request(data)
-    except sqlite3.IntegrityError as exc:
-        # If concurrent retries race on the unique idempotency index, return the
-        # already-created request; do not blindly attempt another insert.
-        with connection() as conn:
-            existing = conn.execute(
-                "SELECT id, request_type, status, created_at FROM service_requests WHERE idempotency_key = ?",
-                (idempotency_key,),
-            ).fetchone()
-        if not existing:
-            raise HTTPException(status_code=409, detail="The request could not be recorded safely.") from exc
-        result = {
-            "created": True,
-            "duplicate": True,
-            "request": dict(existing),
-            "message": "This request was already recorded.",
-        }
-
-    if not result.get("created"):
-        raise HTTPException(
-            status_code=409,
-            detail=result.get("message", "The request was not recorded."),
-        )
+        result = submit_request(data)
+    except RequestRejected as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     req = result.get("request") or {}
     message = result.get("message", "Request recorded as pending in the demo system.")

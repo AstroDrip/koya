@@ -1,245 +1,173 @@
-# MR CARE AI Receptionist — Demo Handoff and Build Plan
+# MR CARE Koya
 
-**Specification baseline:** MR CARE AI Call Centre demo, v1.2 (19 October 2026), incorporating decisions discussed through 24 October 2026.
-**Project status:** API key exists; the uploaded folder currently contains a one-shot Sarvam chat smoke test and a wheel-download helper. It is **not yet** a live phone receptionist, database, dashboard, or Sarvam Voice Agent.
+Koya is a Malayalam-first receptionist backend. The root FastAPI package handles product, warranty and approved-price lookups, records confirmed pending service requests, and provides private CRM APIs for customers, cases and interactions in SQLite.
 
-## 1. Purpose and target experience
+## Run locally
 
-Build a safe, low-cost, Malayalam-first AI receptionist demo for MR CARE in Kerala. A customer calls about a service issue; the agent greets them, understands the problem, collects the required information, checks the private demo database, explains only what the data supports, and records a complaint or a request for technician callback/appointment. The client should be able to see the same records in a demo dashboard later.
-
-Exact opening greeting:
-
-> നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?
-
-The current prototype is Malayalam-only. Keep all conversation instructions clear that the assistant must not fabricate product records, warranty coverage, prices, appointments, or service commitments. When it cannot confirm something, it must say so and offer a technician callback/request rather than guessing.
-
-## 2. Current folder and what is actually working
-
-The original uploaded folder contains:
-
-- `chat.py` — loads `SARVAM_API_KEY` from `.env`, creates a Sarvam Python SDK client, sends one short test prompt, and prints one response. This verifies basic text API access if dependencies, network access, and key are valid. It is **not** a persistent conversation, voice pipeline, API server, CRM integration, or voice agent.
-- `_dl_httpx2.py` — downloads latest Python wheels for `httpx2`, `sarvam-mcp`, `fastmcp`, and `fastmcp-slim` into a Windows temp folder. It is not required for the basic chat API or this demo backend; do not run it as part of normal startup. The script chooses the first wheel/file returned by PyPI and is not a locked/reproducible dependency installer.
-- `.env` — contains the user's Sarvam key. Never paste it into chat, source control, browser code, screenshots, README, or a public deployment. If it was ever committed or shared publicly, rotate/revoke it in Sarvam and create a new one.
-- `.gitignore` — currently excludes `.env` only.
-
-This patch series deliberately keeps the existing Python direction instead of introducing an unrelated Node.js stack. It adds a small FastAPI backend, private SQLite demo data, and a protected webhook for Sarvam Voice Agents API tools. Apply the patches in numerical order.
-
-## 3. Architecture: who does what
-
-Recommended first demo: **Sarvam managed Voice Agents (Samvaad) + this project's own backend + private demo database**.
-
-1. **Phone/voice channel:** Sarvam Voice Agents handles the live audio loop (speech recognition, model turn-taking, speech generation and telephony deployment options). The exact deployment/phone-number choice is a separate configuration step.
-2. **Conversation brain:** The managed voice agent follows MR CARE's Malayalam prompt, gathers missing fields, confirms important details, and decides when a backend lookup is needed. Do not build a second full conversation loop in `chat.py`; that would duplicate the managed agent's work and cost.
-3. **Business rules and data:** This FastAPI backend validates requests, reads/writes only the local demo database, and returns structured results. Warranty, pricing, complaint and appointment outcomes must come from this layer, not the model's imagination.
-4. **Database:** SQLite is for this local demo only. Production deployment should move to a managed database (e.g. PostgreSQL) with backups, migrations, access controls, retention rules, and monitoring.
-5. **Dashboard:** Planned next; it should show demo customers, products, complaints, and callback/appointment requests. The dashboard must call the backend and must not hold the Sarvam key.
-6. **Optional text companion:** During the call, first ask whether the customer can access WhatsApp and whether they agree to receive/use it. Voice remains primary. If WhatsApp is unavailable or declined, offer a simple website text input as a fallback. The current patches do not send WhatsApp messages; no real messages are sent. Future WhatsApp integration requires explicit opt-in, approved templates/provider, credentials, and testing.
-
-Sarvam docs: [Voice Agents overview](https://docs.sarvam.ai/voice-agents/introduction), [API tool/webhook setup](https://docs.sarvam.ai/voice-agents/build/tools/https-tool), [Chat Completion API](https://docs.sarvam.ai/api/api-guides-tutorials/chat-completion/overview), [Python SDKs](https://docs.sarvam.ai/api/getting-started/sdks).
-
-## 4. Customer conversation and data collection
-
-Collect and confirm as relevant:
-
-- Customer name
-- Address/locality
-- Pincode
-- Phone number (use caller ID only when available and exposed by the voice provider; confirm or ask for the preferred contact number)
-- Product name
-- Model number
-- Serial number
-- Invoice number, if available
-- Warranty number, if available (optional, **not required** for warranty check)
-- Description of issue/damage
-
-Ask concise follow-up questions only for missing/ambiguous fields. Do not ask the caller whether a water-damaged phone turns on as a default question; a prior role-play explicitly ruled out that question for that scenario. Ask relevant, non-leading questions and do not make unsafe assumptions.
-
-If the customer cannot use WhatsApp, offer the simple website chat input. The website chat should be a text input/send fallback, not a separate chat persona that repeatedly asks questions while the voice agent is already talking. Keep one conversation owner, session IDs isolated per call, and prevent cross-customer data leakage.
-
-## 5. Demo data model
-
-Customer/dealer fields discussed:
-
-- Name
-- Address
-- Phone
-- Pincode
-
-Product master fields discussed:
-
-- Product name
-- Model number
-- Serial number
-- Purchase date
-- Warranty status
-- Warranty expiry date
-
-Additional operational fields needed to support the workflow include invoice/warranty references when supplied, issue description, consent/contact preference, complaint status, callback/appointment request status, created timestamps, and a call/session correlation ID. Collect only what is needed; don't store full transcripts by default unless a documented purpose, consent/legal basis, access control and retention period are defined.
-
-Warranty logic: use a matching demo product record and the explicit policy/expiry data. If the product is not found, respond with the agreed wording: **“Product master will be added.”** Do not state a product is covered simply because the customer gives a warranty number. If policy/expiry information is missing or ambiguous, say that coverage cannot yet be confirmed and offer a technician callback.
-
-## 6. Complaint, price, callback, and appointment rules
-
-- A complaint may be recorded only after the caller confirms the summary/details.
-- Service-cost estimates may use only an explicitly approved pricing table. If no matching approved price exists, return `price_available: false`; never let the LLM invent a number. The initial demo database intentionally has no approved prices by default.
-- A callback request can be recorded as pending. Do not claim a technician has called or accepted the task.
-- An appointment request can be recorded as pending. Do not promise a date/time until an actual scheduling system or authorized person confirms it. This demo does not connect to a real technician calendar.
-- If the product is unknown, do not create a fake product; mark the master as needing addition / report “Product master will be added.”
-- Ligs is the existing CRM name, but its API/webhook/database integration status is **unknown**. Do not assume it has an API, inspect it separately, and do not modify Ligs or any production system. The demo database remains separate.
-
-## 7. APIs and services required
-
-### Required for the current build
-
-- **Sarvam API key** — for the existing text API smoke test; stored only in local `.env` as `SARVAM_API_KEY`.
-- **Python 3.11+ recommended** and packages in `requirements.txt` (`sarvamai`, `fastapi`, `uvicorn`, `python-dotenv`).
-- **FastAPI backend** — health check, Sarvam text smoke-test endpoint, demo-data endpoints, and protected voice-agent tool endpoint.
-- **SQLite** — local demo DB created by the backend; no external DB service needed locally.
-- **A separate `MRCARE_TOOL_SECRET`** — protects the backend webhook when Sarvam Voice Agents calls it. This is not the Sarvam key. Configure it as a secret in the Sarvam tool UI, not as plain text in the agent prompt.
-
-### Required to make it a real phone receptionist (not yet configured by these files)
-
-- Create/configure a managed voice agent in [Sarvam Samvaad](https://indus.sarvam.ai/samvaad), choose Malayalam voice/language settings, use the exact greeting, add the system prompt from the section below, create an API tool, and test in the agent playground.
-- For the live tool, the backend must have a reachable HTTPS URL. `localhost` is not reachable by Sarvam cloud. Use a temporary secure HTTPS tunnel for controlled tests or deploy to a secure host. Do not expose a dev server publicly without authentication. Keep the webhook timeout tight and return compact JSON.
-- A telephony provider/number or supported Sarvam deployment option is needed for real calls. No real calls or number purchases should happen until explicitly approved.
-- Optional later: WhatsApp Business provider/approved templates, website chat UI, dashboard, PostgreSQL, deployment/monitoring/backups, technician scheduling integration, and a verified Ligs integration if supported.
-
-### Do not add by default
-
-- No real WhatsApp send endpoint, outbound calls, production CRM write, real technician booking, or unapproved price estimates.
-- No API key in frontend JavaScript.
-- No unnecessary second LLM call for every turn. The managed voice agent handles the conversation; backend endpoints handle deterministic business operations.
-
-## 8. Environment variables
-
-Copy `.env.example` to `.env`, then set:
-
-```dotenv
-SARVAM_API_KEY=your_sarvam_key_here
-MRCARE_TOOL_SECRET=replace_with_a_long_random_secret
-MRCARE_DB_PATH=./data/mrcare_demo.sqlite3
-HOST=127.0.0.1
-PORT=8000
-```
-
-The `.env` already present in the original folder may contain the actual key; keep it, do not overwrite it with a placeholder, and do not share it. `.env.example` contains placeholders only. Never commit `.env`.
-
-## 9. Apply patches in order
-
-Extract the patch bundle into the **same parent folder** that contains your existing `aivoice` folder, so `patches\` and `aivoice\` sit beside each other. Open PowerShell in that parent folder (Git must be installed):
+Run these commands from the repository root using Python 3.12, the CI target.
 
 ```powershell
-git apply --ignore-space-change .\patches\001-foundation-readme.patch
-git apply --ignore-space-change .\patches\002-fastapi-backend.patch
-git apply --ignore-space-change .\patches\003-demo-database-and-workflows.patch
-git apply --ignore-space-change .\patches\004-sarvam-voice-tool-webhook.patch
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
-The patches are designed to be sequential. If this folder is not a Git repository, `git apply` still applies patches to files, but keep a backup copy first. Do not apply them twice. If you only want to inspect a patch before applying it, open the `.patch` file in a text editor.
+Use [.env.example](.env.example) as the reference for local configuration. Set separate random secrets for the read and write tools. The Sarvam API key is needed only for the chat smoke test. Keep the main application on loopback and out of the public tunnel or reverse proxy. Where a trusted TLS proxy is used on a private staff network, set `MRCARE_STAFF_AUTH_REQUIRED=1` before starting the main app. Loopback mode trusts the socket peer, so it is intended for direct local access only.
 
-## 10. Run and verify locally
+| App | Port | Routes |
+| --- | --- | --- |
+| `app.main:app` | 8001 | `GET /health`, `GET /readyz`, `POST /api/test-sarvam`, `POST /api/products/lookup`, `POST /api/prices/lookup`, `POST /api/requests`, `GET /api/demo/requests`, legacy `POST /api/voice-tool`, and `/api/crm` routes |
+| `app.public_api:app` | 8002 | `GET /healthz`, `GET /readyz`, and `POST /api/voice-lookup` with `X-MRCARE-Tool-Key` |
+| `app.public_write_api:app` | 8003 | `GET /healthz`, `GET /readyz`, and `POST /api/voice-request` with `X-MRCARE-Write-Key` |
+| `app.voice_events_api:app` | 8004 | `GET /healthz`, `GET /readyz`, and authenticated Sarvam events under `/api/sarvam/inbound` |
+| `app.whatsapp_events_api:app` | 8005 | Meta webhook, public case verification, `GET /healthz`, and `GET /readyz` |
 
-Open PowerShell in the `aivoice` folder:
+Start the main or write app first on a fresh demo database. Both initialize a new demo database, which includes a fictional air fryer. The read app opens the same database for lookups and its readiness endpoint returns HTTP 503 until the schema is available. The seeder and rename scripts remain separate. See the [demo catalog](DEMO_DATA_CATALOG.md) for fixtures and dry-run commands. The bundled patches and nested `aivoice/` are historical. Use the root package and avoid reapplying the patches.
+
+## Upgrade an existing SQLite database
+
+Stop all processes and scripts that use the configured file. First rehearse the command against a copy in a private directory. Migrations 1 and 2 track the legacy schema and create staff users and sessions. Migration 3 adds CRM identity, cases, history, conversations, tokens, and verification tables. It also indexes `products.customer_id`. Migration 4 creates the technician profile, session, coverage, skill, hours, and leave tables plus dispatch requirements, appointment preferences, assignments, appointments, job notes, audit, and notifications. Existing customer, product, price, request, staff, and CRM rows remain intact. Verify the source path and select a new private backup filename. Keep the services stopped until row counts, key historical records, and readiness have been checked.
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-Copy-Item .env.example .env
+.\.venv\Scripts\python.exe -m app.admin_cli migrate --backup .\data\before-foundation.sqlite3
 ```
 
-Only run the `Copy-Item` command if you do **not** already have `.env`; if you do, preserve the existing key and add `MRCARE_TOOL_SECRET` and the other variables manually. Never paste the real key into a shared document.
+The command creates and integrity-checks a SQLite backup before applying transactional schema changes. To recover, stop all database users, restore the verified backup into a separate filename, point `MRCARE_DB_PATH` at that file, and run the pre-upgrade application. Preserve the affected database and its sidecar files for diagnosis.
 
-Start the server:
+## Staff access and tool contracts
+
+The foundation supports short-lived, revocable owner bearer sessions provisioned by a trusted local operator. This is intended for a private API client. Browser sign-in and additional role scopes are future work.
 
 ```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.\.venv\Scripts\python.exe -m app.admin_cli issue-owner-session owner
+.\.venv\Scripts\python.exe -m app.admin_cli revoke-owner-sessions owner
 ```
 
-Verify `http://127.0.0.1:8000/health` and open `http://127.0.0.1:8000/docs` for local API documentation. The health endpoint must not reveal secrets. Test the Sarvam connection only through the backend test endpoint; it should return a short model response or a sanitized error. Keep the server bound to `127.0.0.1` for local-only testing.
+Use the issued value as `Authorization: Bearer <token>` over trusted TLS. It expires in one hour. Store it securely and avoid recording the CLI output or authorization header in logs.
 
-## 11. Sarvam Voice Agent setup (manual workspace step)
+New writes across the three routes require customer confirmation, interaction ID, a valid Indian mobile, product and issue details, and a date or time preference for follow-ups. All outcomes are pending. The separate webhook continues to require a confirmation summary. Existing action-based fallback keys still support legacy clients. For more than one confirmed request in the same call, send a different stable `idempotency_key` per confirmed operation and reuse it on retry. A key reused for a different request returns HTTP 409.
 
-1. Open Samvaad and create a new agent for **MR CARE**. Do not deploy it to a live number yet.
-2. Set the language to Malayalam and configure the exact greeting.
-3. Use the instructions below as the initial agent prompt. Keep instructions in Malayalam if that gives the best test quality, but preserve the required behavior exactly.
-4. Add an API tool named `mrcare_business_action` (or the exact matching name used in the prompt). Method `POST`, URL `https://YOUR-HTTPS-HOST/api/voice-tool`, header `X-MRCARE-Tool-Key` set through Sarvam's secure secret field. JSON body fields should map the action and collected variables. The endpoint accepts an action-based JSON payload; see the OpenAPI docs and the patch notes for supported actions.
-5. Set a short timeout; on failure, the agent should apologize, say it cannot verify the record right now, and offer a callback request without inventing an answer.
-6. Test with the built-in playground/mock tool first. Then point the tool at the real backend HTTPS URL. The local URL `http://127.0.0.1:8000` cannot be reached by Sarvam cloud.
-7. Do not connect telephony or make real calls until explicitly approved.
+Ambiguous product matches return `found: false`, `ambiguous: true`, and a request for the serial number. The unknown-product response remains “Product master will be added.” The voice greeting is **നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?**
 
-Official tool guide: https://docs.sarvam.ai/voice-agents/build/tools/https-tool. The exact tool payload must be tested in the workspace's Test action; provider-side UI fields may evolve.
+## Phase 2 CRM
 
-## 12. Initial agent instruction prompt
+The main app exposes its private CRM contract in local Swagger UI at `/docs`. Staff routes under `/api/crm` always require an owner bearer token. Directory endpoints use the last returned numeric ID as the next `after` cursor.
 
-> You are MR CARE's Malayalam-first service receptionist. Begin exactly: “നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?” Speak politely and naturally in Malayalam. Collect and confirm the customer's name, locality/address, pincode, contact number, product name, model number, serial number, invoice number if available, optional warranty number, and a concise issue/damage description. Ask only useful follow-up questions for missing or conflicting information. Do not ask whether a water-damaged phone turns on as a default question. Before recording a complaint, summarize the details and ask the caller to confirm. Use `mrcare_business_action` for product/warranty lookup, approved price lookup, complaint registration after confirmation, or callback/appointment requests. Never invent product records, warranty coverage, prices, technician availability, or appointment confirmation. A warranty number is optional; use the demo product master and its policy/expiry fields. If the product is not found, say exactly “Product master will be added.” If price or warranty cannot be confirmed, say so and offer a callback. Treat callback and appointment as requests pending human/system confirmation. First ask whether WhatsApp is accessible and whether the customer agrees to use it; if not, offer the simple website text-input fallback. Do not send messages yourself unless an explicitly approved WhatsApp integration is later configured. Keep customer sessions separate and never expose another customer's information.
+- Create a customer with a stable `operation_key` for retries. Enroll a mobile with a completed OTP challenge. Existing customer phone fields remain unverified. Resolve a known verified mobile and matching name for staff use. Mismatches require review. Asset attachment requires an explicit customer, asset ID, and matching serial and refuses reassignment.
+- Create a case with documented customer confirmation and a stable operation key. A supplied asset must belong to that customer. Asia/Kolkata numbering uses `DDMMYYNNN` with up to 999 references per day. Case states in this phase are pending, accepted, rejected, and cancelled. Transitions require the current version and a reason.
+- Store a structured interaction for a case using the source channel, provider, provider account, and external ID. A retry with the same facts returns the original interaction ID. An interaction linked to another case returns HTTP 409. Internal notes and facts remain visible to authorized staff.
+- Issue a case token through the staff API. Tokens expire after 30 days. Issuing a replacement revokes the old token. Resuming a case requires the reference, its token, a verified contact, and a one-use OTP that expires after five minutes. The response contains only that case's reference, status, description, and update time.
 
-## 13. Planned build stages and status
+Contact enrollment and case resumption need a separately configured `MRCARE_CRM_OTP_SECRET` and an approved delivery adapter. The default adapter is disabled and returns HTTP 503 on challenge initiation. The tests inject a fake adapter. Keep the main application private. Existing Sarvam webhook writes continue to use the demo request workflow.
 
-| Stage | Scope | Status after applying this patch series |
-|---|---|---|
-| 0 | API key and basic chat test | Already present in the original folder; retain as smoke-test capability |
-| 1 | Documentation, dependency manifest, environment template, safer ignore rules | Added by patch 001 |
-| 2 | FastAPI health and server-side Sarvam test endpoint | Added by patch 002 |
-| 3 | Private demo SQLite schema, demo seed records, lookup, warranty, approved pricing, complaint and request flows | Added by patch 003 |
-| 4 | Authenticated Sarvam API-tool webhook adapter | Added by patch 004; must be tested with actual tool payload in Samvaad |
-| 5 | Configure managed Voice Agent, prompt, mock tool, playground tests | Manual Sarvam workspace work; not performed by patches |
-| 6 | Secure HTTPS test deployment | Not done; requires explicit host/tunnel choice and security setup |
-| 7 | Website chat fallback + WhatsApp consent workflow (no sending yet) | Specified, UI/provider wiring remains future work |
-| 8 | Dashboard, login/access control, PostgreSQL migration, backups/monitoring | Future work |
-| 9 | Inspect Ligs integration capability safely | Future investigation; no production modifications |
-| 10 | Telephony and live calling | Future, only after explicit approval |
+## Technician portal and dispatch
 
-“Added” means source files are present; it does not mean the code has been installed, run, verified against the user's account, or deployed. Run local tests before relying on any stage.
+Owners manage dispatch from the `/api/dispatch` routes in local Swagger UI at `/docs`. Technicians sign in at `/technician` and use `/api/technician`, which is scoped to their own account. Provision individual one-hour tokens with `POST /api/dispatch/technicians/{id}/session`. Use a trusted private connection and share each token only with its technician through an approved channel. Portal sign-out revokes the current token. Owners can revoke all sessions for a technician.
 
-## 14. Cost and capacity planning (estimates, not quotes)
+- Set each unique technician code, coverage PIN codes, skills, weekly Kolkata working hours, leave, and workload limit. Configure a case's PIN and required skill with the assign endpoint. If the case is pending, acceptance triggers matching. For an accepted case, the endpoint matches immediately.
+- Matching requires an active account, exact PIN and skill coverage, current availability, and spare workload. It ranks by current workload, then technician code. The dispatch queue prioritizes urgent unassigned cases. When nobody qualifies, the case stays unassigned and dispatch receives an in-app notification. Owner selection requires a reason and checks the same eligibility rules.
+- A technician can accept or decline a 30-minute offer. Declines trigger reassignment. An owner can release an assignment with a reason and then assign again. Run `POST /api/dispatch/process-timeouts` from approved local scheduling or manually to process expired offers and generate upcoming appointment reminders. No scheduler is installed automatically.
+- Save a customer preference separately from the booking. After technician acceptance, browse available Kolkata slots and reserve a future interval. Booking and rescheduling check hours, leave, and concurrent bookings in the same SQLite write transaction. Cancellation and no-show are recorded separately.
+- The portal supports acceptance, decline, visit status changes, inspection and parts entries, job notes, escalation, and in-app notifications. Customer visit contact appears only after booking. CRM acceptance and dispatch progress are tracked separately, with the dispatch detail endpoint showing the visit and audit history. Completion closes the confirmed appointment.
 
-The demo target budget discussed was up to **₹1,000 initially**. Previous planning figures discussed for Sarvam managed voice agents were around ₹3.50/minute pay-as-you-go, plus telephony charges (example discussed: ₹0.20 per 30-second pulse and ₹59/30-day number rental), with plan/usage details subject to change. A previous two-minute illustration was approximately ₹7.80 before tax and allocated number rental. Treat all figures as **historical planning estimates only**; check the current Sarvam dashboard/pricing and telephony terms before spending. A text API smoke test is not billed like a managed phone call; audio, agent, telephony, number rental, hosting, WhatsApp, domain, tax, monitoring and backup costs are separate categories. Do not buy a number or place calls until approved.
+The portal supports in-app notifications, reminders, and estimate submission from the approved price book. Browser account recovery and photo uploads require later integrations.
 
-Initial expected peak concurrency discussed: **1–5 simultaneous calls**, with a path to scale later. This local SQLite/demo server is not yet a production-concurrency design. Real deployment needs measured load tests, queue/timeout behavior, provider concurrency limits, database pooling, monitoring and clear fallback when the agent is busy.
+## Call centre and Sarvam
 
-## 15. Security, privacy, reliability and production boundary
+Owners can review `/call-centre` using a staff session. The board follows committed events and polls every ten seconds when the stream is unavailable. A fresh start-only record is a **start observed**, and after 15 minutes it becomes stale. Missing end events, ring state, and queue depth cannot be inferred. The existing product, price, and callback tools stay on their current applications.
 
-- Never commit `.env` or expose either secret to browser code.
-- Use `MRCARE_TOOL_SECRET` for the webhook separately from `SARVAM_API_KEY`; rotate secrets if exposed.
-- Local demo only; no Ligs/production changes and no real calls or WhatsApp messages by default.
-- Bind the development server to localhost. For a cloud tool, use HTTPS and strong auth; do not expose an unauthenticated dev server.
-- Validate payload lengths and action names; return minimal structured data; don't include secrets or full transcripts in logs.
-- Use request/session correlation IDs and idempotency for actions that create records; do not create duplicate complaints from tool retries.
-- Put timeouts on provider calls; use bounded retries, safe fallback and rate limiting before public deployment.
-- Keep demo/test customer data fictional. Do not upload actual customer records to the prototype without authorization and a privacy/retention plan.
-- Do not treat a model response as authoritative for warranty, pricing, or scheduling; business facts must be returned by backend tools.
+For an approved deployment, start the isolated event app with `python -m uvicorn app.voice_events_api:app --host 127.0.0.1 --port 8004`. Expose only the approved event paths over HTTPS. Keep the main app private. Use one configured inbound app and deployment per event process and separate event, media, and tool secrets.
 
-## 16. Known limitations / next decisions
+| Purpose | Route and provider mapping |
+| --- | --- |
+| Conversation hooks | `POST /api/sarvam/inbound/hooks/start` and `/end`. Configure Sarvam's `on_start` and `on_end` HTTP tools with static `X-MRCARE-Voice-Hook-Key`. Map Interaction ID to `interaction_id`. Supply an offset-bearing full timestamp as optional `event_at`, or the backend records receipt time. |
+| Signed completion | `POST /api/sarvam/inbound/complete`. Use a stored Sarvam webhook config and its signing secret. Configure the expected app and deployment IDs. The backend verifies the raw payload HMAC and timestamp, deduplicates by app and interaction, and prevents late hooks from reopening completed calls. |
+| Human escalation | `POST /api/sarvam/inbound/escalations` with the hook key, `interaction_id`, and a predefined category. The staff queue records a request. Actual transfer uses Sarvam's core tool on supported telephony and requires separate verification. |
 
-- The patches cannot create or configure a Sarvam Voice Agent in the user's account; that is a separate Samvaad workspace step.
-- The webhook payload mapping needs an end-to-end test against the current Sarvam API-tool UI before production use.
-- There is no real phone number, telephony routing, WhatsApp integration, public HTTPS host, dashboard, technician calendar, or Ligs connection in this repository yet.
-- Demo pricing records must be populated only from MR CARE-approved prices. No default service price is seeded.
-- SQLite is intended for local demonstration, not high availability or multiple production instances.
-- Current code is a starting demo implementation, not certified for production or emergency use.
+Migration 5 adds `voice_calls`, `voice_event_inbox`, `voice_audit`, `voice_recording_metadata`, `voice_permissions`, `voice_followups`, and `voice_escalations`. Apply the same backup-first upgrade procedure above. Existing business and staff rows remain intact.
 
+Link calls with an owner-reviewed case association. Phone matches and agent outputs are insufficient for identity. The webhook keeps metadata and transcript availability. Documented media permission allows owners to fetch transcripts and filtered trace outcomes from the workspace. For WAV retrieval, request a 60-second grant at `POST /api/call-centre/calls/{id}/recording-grant`. Fetch the returned path with the same bearer session and send its fragment value in `X-MRCARE-Media-Grant`. This keeps the grant outside access URLs and logs. By default, Sarvam holds the recordings and the database stores metadata and a checksum. Phase 7 adds optional private recording storage. Review access and retention policy before production.
 
-## 17. Webhook contract added by patch 004
+### Happy Calls
 
-The protected `POST /api/voice-tool` endpoint expects the `X-MRCARE-Tool-Key` header and a JSON body. It supports these action names: `lookup_product`, `check_warranty`, `lookup_approved_price`, `register_complaint`, `request_callback`, `request_appointment`. For example, a **local-only test** can send `{"action":"lookup_product","model_number":"DEMO-AF-01"}`. For a complaint, include `customer_confirmed: true`; otherwise it is rejected. Use `interaction_id` and a stable `idempotency_key` to reduce duplicate records when tools retry.
+Record explicit outbound permission for a verified CRM contact and queue a Happy Call only for a confirmed visit. The owner-only brief reads the confirmed appointment and technician and includes a current approved estimate when available. Submission rechecks permission and appointment version. Authenticated Sarvam Analytics reconciliation requires an exact attempt ID and contact match. A timeout produces an uncertain state requiring human review. A connected attempt and a customer informed outcome are separate.
 
-In Samvaad, map the body fields to the agent's captured variables using its variable picker and configure the header via a secure secret. Test the tool's request/response using the current workspace's Test button; do not assume the provider's UI has exactly the same fields as an older screenshot. Do not send full call transcripts unless there is a documented reason.
+Real outbound is disabled by default. Enable it only after separate owner approval, a verified dedicated agent, authorized telephony, and an approved process for proving identity and giving the agent case-scoped context. The Instant Outbound adapter uses documented dial fields. This checkout does not transmit the private owner brief to the agent or verify live workspace context mapping. The optional Phase 7 worker supports read-only reconciliation. Outbound call submission remains an explicit owner action.
 
-**Important:** this endpoint is a starter adapter, not a guarantee that every Sarvam workspace emits the same body shape. First test a mock tool, then test the real endpoint with a minimal lookup, then enable write actions. Keep it private until authentication, HTTPS, validation, idempotency, and timeout behavior have been verified.
+### Malayalam voice QA before provider rollout
 
-## 18. Separate confirmed write API (patch 006)
+Use synthetic fixtures. Record the tested agent revision, selected voice, and outcome. Start in the Sarvam playground and obtain separate approval for live telephony tests.
 
-`app.public_write_api` is a narrow second FastAPI app intended for local-demo testing on `127.0.0.1:8003`. It exposes only `GET /healthz` and authenticated `POST /api/voice-request`; docs/OpenAPI are disabled. It uses a separate `MRCARE_WRITE_TOOL_SECRET` in the `X-MRCARE-Write-Key` header, not the read-only lookup credential.
+| Scenario | Evidence to capture |
+| --- | --- |
+| Greeting and voice choice | The greeting is **നമസ്കാരം, MR CARE-ലേക്ക് സ്വാഗതം. എങ്ങനെ സഹായിക്കാം?**. A Malayalam reviewer compares supported voices if the pronunciation sounds Tamil-influenced. |
+| Model, serial, address, and PIN | The agent confirms unclear letters or digits, code-mixes naturally, and reuses details already supplied. |
+| Mobile validation | Valid ten-digit and `+91` forms pass. An incomplete number gets a reprompt and no write. |
+| Lookup and cost | Unknown and ambiguous products, optional warranty numbers, and unavailable prices produce the existing safe results. |
+| Confirmation and interruption | The agent handles interruption without repeating known questions, avoids the default water-damage power-on question, and writes only after confirmation. Pending requests remain pending. |
+| Escalation and Happy Call | Record transfer and fallback outcomes. Verify identity before sharing case details. Require evidence before marking the customer informed. |
 
-Supported actions are `register_complaint`, `request_callback`, and `request_appointment`. Every write requires a non-blank customer name and contact phone, product and issue information, a Sarvam Interaction ID, an explicit `customer_confirmed: true` signal, and a concise `confirmation_text` representing the summary the customer confirmed. Callback/appointment requests also require a customer-stated preferred date or time. The API assigns an idempotency key from the Interaction ID plus action when the tool doesn't supply one, preventing repeated tool calls for the same request from creating duplicate records. Stored requests remain `pending`: no technician is assigned, no callback is guaranteed, and no appointment time is confirmed.
+[Sarvam hooks](https://docs.sarvam.ai/voice-agents/build/on-start-on-end-hooks) · [Inbound webhook](https://docs.sarvam.ai/voice-agents/api/deployments/webhooks/webhook-payload) · [Analytics API](https://docs.sarvam.ai/voice-agents/api/analytics/overview) · [Instant Outbound](https://docs.sarvam.ai/voice-agents/api/instant-outbound/create) · [Call transfer](https://docs.sarvam.ai/voice-agents/build/tools/call-transfer)
 
-Local-only launch command (after adding a new, independent `MRCARE_WRITE_TOOL_SECRET` to `.env`):
+## WhatsApp and case continuity
+
+Migration 6 adds the WhatsApp inbox, consent history, verification bindings, handoffs, outbound queue, receipts, rate counters, and a shared channel claim. It adds a channel field defaulting to `crm` to the existing OTP challenge table. Run the backup-first migration procedure above before upgrading an existing SQLite deployment.
+
+For an approved test deployment, run `python -m uvicorn app.whatsapp_events_api:app --host 127.0.0.1 --port 8005 --no-access-log`. Terminate TLS at the approved ingress and omit webhook verification query strings, request bodies, and authorization headers from all logs. The Meta webhook path is `/api/whatsapp/webhook`. Use the expected WABA ID and business phone-number ID. Set separate webhook verification and Meta app secrets. Keep the private owner operations on the main app.
+
+- **Incoming messages.** The webhook acknowledges after verifying the raw-body signature and storing new provider IDs and receipts. It does not call an external OTP, messaging, or AI provider. The local responder recognizes supported Malayalam and English commands and routes unsupported text and attachments to staff. Attachments are identified by type. No media is downloaded automatically.
+- **Case verification.** In chat, send `START` to opt in and `RESUME <case reference>` to choose a case. Then open the approved `/whatsapp/verify` page and provide the case token and an OTP sent by a separate approved adapter to the existing verified contact. Keep both credentials out of chat. The verified scope lasts 15 minutes and ends if the case token is revoked, the contact opts out, or the chat switches cases. After verifying, send `STATUS` or `നില` to see the latest CRM status and any confirmed appointment. The test adapter delivers synthetic OTPs. Live delivery is disabled by default.
+- **Shared ownership.** WhatsApp uses the existing CRM conversation for the verified case. An active linked voice call holds a case claim until its end is observed or its lease expires. A pending WhatsApp case reply stays queued while another channel holds that claim. The coordination applies to linked voice calls and submitted Happy Calls. Unlinked conversations cannot be correlated by phone number alone.
+- **Handoff and staff updates.** Send `HUMAN` to request staff assistance or send an update for the verified case. An open handoff pauses automated case replies. Use the private `/api/whatsapp/threads`, `/handoffs`, and `/outbox` endpoints to review, reply, and close handoffs. Staff free text requires a verified case scope and an open customer-service window.
+- **Outbound controls.** All sends require active WhatsApp opt-in. `STOP` or `നിർത്തുക` revokes the scope and cancels queued sends. Free text also requires a user message within the last 24 hours. Outside that window, submit only a Meta-approved static template and language listed as `name:language` in `MRCARE_WHATSAPP_APPROVED_TEMPLATES`. The system checks consent, scope, template allowance, and rate limits again at submission. A provider acknowledgement records submission. Signed receipts separately update sent, delivered, read, or failed. An ambiguous send requires staff review and is not automatically retried.
+
+Set `MRCARE_WHATSAPP_VERIFY_URL` to the approved HTTPS verification page. Graph API version and access token are server settings. Keep `MRCARE_WHATSAPP_SEND_ENABLED=0` until the owner approves production sending and the business account, webhook, verification delivery, templates, rates, and opt-in records are verified. Process queued messages explicitly through the owner API in this phase. No background worker is installed. The local workflow uses deterministic intent routing and CRM data, including approved estimates within the verified case scope. Free-form AI replies and media retrieval require later integration.
+
+[Meta WhatsApp webhooks](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/overview) · [WhatsApp Cloud API](https://developers.facebook.com/documentation/business-messaging/whatsapp/overview) · [WhatsApp Business Messaging Policy](https://business.whatsapp.com/policy)
+
+## Estimates, invoices, and sales
+
+Migration 7 adds finance accounts and sessions, issuer and fee policies, approved price revisions, immutable estimate lines and events, fiscal-year document sequences, invoices, voids, credit notes, and cash events. The backup-first procedure applies. Existing catalog rows remain in place, and no fictional demo price is copied into the finance price book.
+
+Owners provision one-hour finance sessions and can revoke or deactivate them. Finance users can operate the estimate and invoice ledger, while the owner publishes issuer settings, the inspection minimum, and approved price versions. Authorized staff use the private `/api/finance` routes in local Swagger UI. The `/finance` view shows date-filtered totals, trends, recent invoices, and a CSV export. Technicians use **Prepare estimate** inside their assigned job. Each submission is an estimate revision sent for staff review.
+
+- **Amounts and approvals.** Amounts use integer INR paise. Staff configure net inspection minimums and catalog prices explicitly. The backend computes net line value after discount and rounds the configured line tax half-up to one paise. A positive tax rate requires reviewed issuer registration, classification, and a tax label. Current catalog items and inspection policy are rechecked at approval. Quote only the current, approved, unexpired estimate for the verified case.
+- **Invoice issue.** Record the verified customer's decision with evidence. Issue an invoice only from a current accepted estimate and a completed visit. Invoices have Kolkata financial-year sequences and preserve the issuer, customer, product, case, and priced lines as issued. Unpaid, unadjusted invoices can be voided with evidence. A replacement uses a new accepted estimate and a new number.
+- **Adjustments and cash.** Credit notes reference original invoice line quantities and prorate the original net and tax in paise, assigning any rounding remainder when the line is fully credited. Cash entries record confirmed external activity. A stable source and transaction reference deduplicate payments and refunds across requests. Refunds require available refundable value linked to the original payment and a credit note. This API does not move funds or receive payment-provider webhooks. Never enter full card numbers or credentials.
+- **Reconciliation.** Billed amounts, discounts, tax, credits, voids, collections, and refunds are dated by their ledger events. Net sales exclude tax and reflect credits and voids. Outstanding balances and refunds due are calculated as of the report cutoff, including prior-period invoices. Reports include service, parts, inspection, completed visits, and complaint conversion. Estimates do not enter billed sales.
+
+Review the approved issuer setup, applicable classifications and tax rules, and customer addresses before relying on invoices for statutory use. GST return filing, statutory e-invoicing, tax-jurisdiction automation, and payment gateways are outside this implementation. [CBIC invoice, credit, and debit note guidance](https://cbic-gst.gov.in/gst-invoice-rules.html)
+
+## Phase 7 production operations
+
+Install `requirements-production.txt`. Set `MRCARE_DATABASE_URL` to use PostgreSQL and `MRCARE_REDIS_URL` to enable shared rate limiting and event notifications. With no PostgreSQL URL, the local demo uses SQLite. Budget database connections across all API replicas and workers using `MRCARE_DB_POOL_SIZE`. Increase `MRCARE_DB_POOL_MIN_SIZE` within that budget when pool metrics show requests waiting for connection setup during bursts. Keep the staff API, database, Redis, metrics, and monitoring private. Terminate TLS at a trusted proxy and use separate credentials for each integration. [Psycopg pool configuration](https://www.psycopg.org/psycopg3/docs/advanced/pool.html)
+
+### Cutover and recovery
+
+1. Stop writers and take a verified SQLite backup using the existing backup-first procedure. Apply migration 8 to a working copy using the SQLite CLI with `MRCARE_DB_PATH` set to that copy and `MRCARE_DATABASE_URL` cleared. Keep the original backup for recovery.
+2. Set `MRCARE_DATABASE_URL` to an empty PostgreSQL destination. Run `python -m app.pg_admin import-sqlite --verified-backup <migration-8-copy>`. The importer checks SQLite integrity, imports in one transaction, verifies table counts and content hashes, and resets sequences. For a fresh install use `python -m app.pg_admin migrate`.
+3. Check `/readyz` for each API and verify case, call, dispatch, WhatsApp and finance records before allowing writes. If cutover must be reversed after new writes, freeze writes and reconcile the new PostgreSQL records before reopening SQLite.
+4. Write the PostgreSQL backup to encrypted storage with `pg_dump -Fc -f /encrypted/backups/koya.dump "$MRCARE_DATABASE_URL"`. Rehearse restoration against a separate empty database with `pg_restore --exit-on-error -d "$MRCARE_RESTORE_DATABASE_URL" /encrypted/backups/koya.dump`. Verify case and call counts, invoice totals, and event replay before promoting a recovered database. CI also defines a synthetic logical-restore check.
+
+Run `python -m app.worker` for leases, retries, reconciliation, and retention. Review dead jobs and provider acknowledgements before any manual replay. `MRCARE_WORKER_ALLOW_EXTERNAL` defaults to zero. Keep external activity disabled until the corresponding provider settings and permissions have been verified. Workers do not initiate Happy Calls.
+
+Owner sessions can connect to `/api/operations/events` with `Last-Event-ID` to recover committed changes. The board refreshes after the replay window expires and polls if it cannot open a stream. A Redis outage leaves database replay available and switches rate limiting to per-process counters. Scrape `/metrics` with `MRCARE_METRICS_KEY`. The example Prometheus configuration under `deploy/` discovers main API replicas over the staging network and loads alerts for readiness, error rates, queue age, and dead jobs. Mount the metrics key as a secret file and connect your alert receiver before rollout. `compose.phase7.yml` publishes the gateway only on loopback. Start two staff and lookup replicas using `docker compose -f compose.phase7.yml up -d --scale main=2 --scale voice-lookup=2` after migrating the database. Nginx resolves each service over the internal network. Expose approved provider routes only through the configured TLS ingress.
+
+Optional S3 recording storage requires documented media permission, a private encrypted bucket, lifecycle rules, and a service identity limited to that bucket and prefix. The staff API rechecks permission and streams only through an expiring media grant. Use synthetic WAVs to exercise retention and permission revocation before enabling storage for callers. [S3 Block Public Access](https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html) · [S3 server-side encryption](https://docs.aws.amazon.com/AmazonS3/latest/userguide/serv-side-encryption.html)
+
+Run `python -m scripts.load_capacity --rounds 1 --hold-seconds 1800 --enforce-targets` with `MRCARE_TEST_DATABASE_URL` pointing to a disposable empty loopback database named `koya_load_<suffix>` and a dedicated test Redis instance. Confirm p95 ≤ 500 ms, p99 ≤ 1 second, unexpected errors ≤ 0.5%, and dashboard propagation ≤ 2 seconds. On Linux staging, monitor API CPU with `rate(process_cpu_seconds_total[1m])` and memory with `process_resident_memory_bytes`. Check PostgreSQL and Redis resource usage alongside `mrcare_database_pool{stat="requests_waiting"}`, `mrcare_queue_depth`, and `mrcare_queue_delay_seconds`. This harness uses synthetic users and mock telephony. For live capacity, confirm the enabled Sarvam account's concurrency entitlement and the selected telephony route's simultaneous-call limit. Record those limits and the selected app and deployment before authorizing a live load test. The owner can exercise Malayalam voice acceptance during Phase 8.
+
+## Verify
+
+Run from the repository root. Each script uses its own process and synthetic data.
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.public_write_api:app --host 127.0.0.1 --port 8003
+$env:PYTHONPATH = "."
+foreach ($test in Get-ChildItem tests/test_*_local.py) {
+    .\.venv\Scripts\python.exe $test.FullName
+    if ($LASTEXITCODE) { throw "Local API check failed: $($test.Name)" }
+}
+.\.venv\Scripts\python.exe test_phone_validation.py
 ```
 
-Test this API locally first. Do not expose it through HTTPS or configure Sarvam's write tools until authentication, missing-confirmation rejection, missing-interaction-ID rejection, valid pending creation, and idempotent retry have passed. Use Sarvam's built-in `Interaction ID` call-context variable, not a customer-provided variable. This demo API is not connected to Ligs or production systems and must not be treated as a real technician scheduler.
-
+The top-level live API and tunnel scripts require an explicitly approved test deployment. They are excluded from CI.

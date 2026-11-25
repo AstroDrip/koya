@@ -1,4 +1,3 @@
-from sarvamai import SarvamAI
 from .config import SARVAM_API_KEY
 
 class SarvamNotConfigured(RuntimeError):
@@ -7,6 +6,8 @@ class SarvamNotConfigured(RuntimeError):
 def generate_smoke_test_reply(prompt: str) -> str:
     if not SARVAM_API_KEY:
         raise SarvamNotConfigured("SARVAM_API_KEY is not configured in the server environment.")
+    from sarvamai import SarvamAI
+
     client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
     response = client.chat.completions(
         model="sarvam-105b-conversations",

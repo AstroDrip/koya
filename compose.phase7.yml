@@ -1,0 +1,89 @@
+name: koya-phase7
+
+x-runtime: &runtime
+  image: koya-runtime:local
+  build:
+    context: .
+  restart: unless-stopped
+  env_file:
+    - ${MRCARE_RUNTIME_ENV_FILE:-.env}
+  environment:
+    MRCARE_DATABASE_URL: ${MRCARE_DATABASE_URL:?Use a dedicated PostgreSQL database and account}
+    MRCARE_REDIS_URL: redis://redis:6379/0
+    MRCARE_STAFF_AUTH_REQUIRED: "1"
+    MRCARE_WORKER_ALLOW_EXTERNAL: ${MRCARE_WORKER_ALLOW_EXTERNAL:-0}
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-koya}
+      POSTGRES_USER: ${POSTGRES_USER:-koya}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a staging PostgreSQL password}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+  migrate:
+    <<: *runtime
+    restart: "no"
+    profiles: ["tools"]
+    command: ["python", "-m", "app.pg_admin", "migrate"]
+  main:
+    <<: *runtime
+    expose: ["8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/readyz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    depends_on:
+      main:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx-phase7.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8001:80"
+      - "127.0.0.1:8002:8002"
+      - "127.0.0.1:8003:8003"
+      - "127.0.0.1:8004:8004"
+      - "127.0.0.1:8005:8005"
+  voice-lookup:
+    <<: *runtime
+    command: ["python", "-m", "uvicorn", "app.public_api:app", "--host", "0.0.0.0", "--port", "8002", "--no-access-log"]
+    expose: ["8002"]
+  voice-write:
+    <<: *runtime
+    command: ["python", "-m", "uvicorn", "app.public_write_api:app", "--host", "0.0.0.0", "--port", "8003", "--no-access-log"]
+    expose: ["8003"]
+  sarvam-events:
+    <<: *runtime
+    command: ["python", "-m", "uvicorn", "app.voice_events_api:app", "--host", "0.0.0.0", "--port", "8004", "--no-access-log"]
+    expose: ["8004"]
+  whatsapp-events:
+    <<: *runtime
+    command: ["python", "-m", "uvicorn", "app.whatsapp_events_api:app", "--host", "0.0.0.0", "--port", "8005", "--no-access-log"]
+    expose: ["8005"]
+  worker:
+    <<: *runtime
+    command: ["python", "-m", "app.worker"]
+
+volumes:
+  postgres-data:
+  redis-data:
