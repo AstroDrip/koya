@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Verify your case | MR CARE</title>
+    <link rel="stylesheet" href="/whatsapp/verify.css">
+    <script defer src="/whatsapp/verify.js"></script>
+</head>
+<body>
+    <header><strong>MR CARE</strong></header>
+    <main>
+        <section class="panel">
+            <h1>Verify your WhatsApp case</h1>
+            <p>First send <strong>RESUME</strong> and your case reference in WhatsApp. Enter your token and code only on this verification page.</p>
+            <form id="start" method="post">
+                <label for="mobile">Verified Indian mobile number</label>
+                <input id="mobile" type="tel" autocomplete="tel" maxlength="40" required>
+                <label for="reference">Case reference</label>
+                <input id="reference" inputmode="numeric" autocomplete="off" pattern="[0-9]{9}" maxlength="9" required>
+                <label for="token">Case token</label>
+                <input id="token" type="password" autocomplete="off" minlength="43" maxlength="43" required>
+                <button>Request one-time code</button>
+            </form>
+            <form id="confirm" method="post" hidden>
+                <label for="code">One-time code</label>
+                <input id="code" type="password" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required>
+                <button>Verify case</button>
+            </form>
+            <button id="restart" type="button" hidden>Start again</button>
+            <p id="message" role="status" aria-live="polite"></p>
+        </section>
+    </main>
+</body>
+</html>

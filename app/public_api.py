@@ -11,6 +11,9 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import MRCARE_TOOL_SECRET
+from .database import database_available_for_request
+from .readiness import router as readiness_router
+from .reliability_api import install_reliability
 from .workflows import lookup_price, lookup_product
 
 app = FastAPI(
@@ -20,6 +23,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+app.include_router(readiness_router)
+install_reliability(app, "voice-lookup")
 
 
 class VoiceLookupPayload(BaseModel):
@@ -38,7 +43,7 @@ def _authenticate(x_mrcare_tool_key: Optional[str]) -> None:
             detail="Read-only voice lookup secret is not configured on the backend.",
         )
     if not x_mrcare_tool_key or not secrets.compare_digest(
-        x_mrcare_tool_key, MRCARE_TOOL_SECRET
+        x_mrcare_tool_key.encode(), MRCARE_TOOL_SECRET.encode()
     ):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -57,6 +62,8 @@ def voice_lookup(
     ),
 ):
     _authenticate(x_mrcare_tool_key)
+    if not database_available_for_request():
+        raise HTTPException(503, "Database is not ready.")
     action = payload.action
 
     if action in ("lookup_product", "check_warranty"):
@@ -84,6 +91,7 @@ def voice_lookup(
                 "ok": True,
                 "found": False,
                 "message": result.get("message", "Product master will be added."),
+                **({"ambiguous": True} if result.get("ambiguous") else {}),
             }
 
         product = result["product"]

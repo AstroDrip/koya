@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Finance | MR CARE</title>
+    <link rel="stylesheet" href="/technician/assets/portal.css">
+    <script defer src="/finance/reports.js"></script>
+</head>
+<body>
+    <header><strong>MR CARE</strong><button id="sign-out" hidden>Sign out of view</button></header>
+    <main>
+        <h1>Finance</h1>
+        <section class="panel" id="entry">
+            <form id="sign-in" method="post">
+                <label for="session">Finance or owner session token</label>
+                <input id="session" type="password" autocomplete="off" maxlength="43" required>
+                <button>Open finance</button>
+            </form>
+        </section>
+        <p id="message" role="status" aria-live="polite"></p>
+        <section id="workspace" hidden>
+            <section class="panel">
+                <h2>Sales and collections</h2>
+                <form id="filters">
+                    <label for="start">Start date</label><input type="date" id="start" required>
+                    <label for="end">End date</label><input type="date" id="end" required>
+                    <label for="group">Group by</label>
+                    <select id="group"><option value="daily">Day</option><option value="weekly">Week</option><option value="monthly">Month</option></select>
+                    <button>Run report</button>
+                </form>
+                <p id="period"></p>
+                <ul id="totals" class="cards"></ul>
+                <button id="export" type="button" disabled>Export CSV</button>
+            </section>
+            <h2>Period breakdown</h2>
+            <ul id="trends" class="cards"></ul>
+            <h2>Recent invoices</h2>
+            <ul id="invoices" class="cards"></ul>
+        </section>
+    </main>
+</body>
+</html>

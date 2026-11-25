@@ -24,6 +24,12 @@ sys.path.insert(0, str(project_root))
 tmp_dir = Path(tempfile.mkdtemp(prefix="mrcare-write-test-"))
 test_db = tmp_dir / "write-test.sqlite3"
 test_secret = "TEST_ONLY_" + uuid4().hex + uuid4().hex
+
+# Use only isolated data and fake providers even when the shell has deployment settings.
+os.environ.update(MRCARE_DATABASE_URL="", MRCARE_REDIS_URL="", MRCARE_RECORDINGS_BUCKET="",
+                  MRCARE_WORKER_ALLOW_EXTERNAL="0", MRCARE_WHATSAPP_SEND_ENABLED="0",
+                  MRCARE_SARVAM_OUTBOUND_ENABLED="0")
+
 os.environ["MRCARE_DB_PATH"] = str(test_db)
 os.environ["MRCARE_WRITE_TOOL_SECRET"] = test_secret
 

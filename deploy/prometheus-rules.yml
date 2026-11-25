@@ -1,0 +1,37 @@
+groups:
+  - name: mrcare-reliability
+    rules:
+      - alert: MRCAREBackendUnavailable
+        expr: up{job=~"mrcare-.+"} == 0 or mrcare_database_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: MR CARE backend or database is unreachable
+      - alert: MRCAREHighErrorRate
+        expr: |
+          sum by (service) (rate(mrcare_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum by (service) (rate(mrcare_http_requests_total[5m])), 0.01) > 0.005
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: MR CARE requests exceed the 0.5% error threshold
+      - alert: MRCARESlowVoiceTool
+        expr: |
+          histogram_quantile(0.95, sum by (service,le) (
+            rate(mrcare_http_request_seconds_bucket{service=~"voice-lookup|voice-write"}[5m]))) > 0.5
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Voice tool p95 latency exceeds 500 ms
+      - alert: MRCAREWorkerBacklog
+        expr: mrcare_queue_delay_seconds > 300 or mrcare_queue_depth{state="dead"} > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Review overdue jobs and dead letters
+      - alert: MRCAREDashboardAndRateLimitDegraded
+        expr: increase(mrcare_redis_rate_fallback_total[5m]) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Requests are using local fallback rate limiting

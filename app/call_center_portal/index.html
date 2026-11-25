@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Call centre | MR CARE</title>
+    <link rel="stylesheet" href="/technician/assets/portal.css">
+    <script defer src="/call-centre/board.js"></script>
+</head>
+<body>
+    <header>
+        <strong>MR CARE</strong>
+        <button id="sign-out" type="button" hidden>Sign out of board</button>
+    </header>
+    <main>
+        <h1>Call centre</h1>
+        <section id="entry" class="panel">
+            <form id="sign-in">
+                <label for="session">Owner session token</label>
+                <input id="session" type="password" autocomplete="off" maxlength="43" required>
+                <button>Open call board</button>
+            </form>
+        </section>
+        <p id="message" role="status" aria-live="polite"></p>
+        <section id="board" hidden>
+            <p id="observed"></p>
+            <p>Start observed means the provider reported a conversation start. Calls without an end event may already have ended.</p>
+            <label for="filter">Show</label>
+            <select id="filter">
+                <option value="all">All recent calls</option>
+                <option value="start_observed">Recent start observed</option>
+                <option value="stale">Start observation is stale</option>
+                <option value="last_verified">Other verified states</option>
+            </select>
+            <h2>Recent calls</h2>
+            <ul id="calls" class="cards"></ul>
+            <h2>Open escalations</h2>
+            <ul id="escalations" class="cards"></ul>
+            <h2>Recent Happy Calls</h2>
+            <ul id="followups" class="cards"></ul>
+        </section>
+    </main>
+</body>
+</html>
